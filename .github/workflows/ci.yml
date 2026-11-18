@@ -111,5 +111,5 @@ jobs:
       - run: pnpm check
       - name: Generated API types match the server
         run: pnpm generate && git diff --exit-code -- src/api
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium firefox
       - run: pnpm e2e

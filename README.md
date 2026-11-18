@@ -97,6 +97,11 @@ The workbench is a web app that runs on your own machine. It has three screens:
 - The spec editor runs the spec against the open document as you type. Each field shows its
   status, value and message, and its boxes are drawn on the page.
 
+Every screen works with the keyboard alone. The boxes on a page are one list: Tab enters it,
+the arrow keys move through the boxes, and Enter does what a click does. `?` lists the
+shortcuts. A request that fails says so beside the control that made it. It was checked with
+automated accessibility scans in Chromium and Firefox, and not yet with a screen reader.
+
 Start it from a clone of this repository. It needs [uv](https://docs.astral.sh/uv/), Node 26
 and [pnpm](https://pnpm.io/):
 
@@ -165,7 +170,7 @@ cd ../web
 pnpm install --frozen-lockfile
 pnpm check        # format, lint, types, unit tests, build
 pnpm generate && git diff --exit-code -- src/api   # the API types match the server
-pnpm exec playwright install --with-deps chromium
+pnpm exec playwright install --with-deps chromium firefox
 pnpm e2e          # the three screens in a browser, against the real server
 ```
 

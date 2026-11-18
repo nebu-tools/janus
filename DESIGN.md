@@ -119,7 +119,10 @@ checks = janus_pdf.compare(ex, reference, rules={})                        # com
   the parser's recipe, so it is never taken for other bytes or another recipe. Each file is
   written under a name of its own and then moved into place, so two processes that write the
   same page leave one whole file. A file that is not a whole page is read again and written
-  over. The parser deletes no file; removing the directory is the caller's job.
+  over. A writer that is killed in the middle of a write leaves the file it was writing, a
+  `.part` file named by the same key. The next writer of that key deletes its `.part` files that
+  are older than ten minutes; a younger one may belong to a writer still at work. The parser
+  deletes nothing else; removing the directory is the caller's job.
 - A `SpecError` has a `line`, counted from 1, when the spec was given as text and the error
   belongs to one line. An editor marks the error there.
 - An `Inspection` gives each page's size in points and each heading's box, so that a caller can
@@ -659,7 +662,8 @@ A read writes each page to the document's page cache (`PyMuPDFParser(cache=...)`
 list counts the files there, so the client shows progress by polling that one endpoint while a
 document is being read. A read cut off by a stop goes on from the pages already written. The
 cache is deleted before the row says `ready` or `failed`, under the lock the list is read with,
-so a finished row never has a cache beside it. At start the server deletes the cache of every
+so a finished row never has a cache beside it. The whole directory goes, with any `.part` file a
+killed writer left in it. At start the server deletes the cache of every
 row that is not queued.
 
 The server has no sign-in. It listens on 127.0.0.1 by default. `--host` takes a loopback
@@ -709,17 +713,76 @@ input comes until the newer input is answered, and it stays stale when the newer
 the spec does not load. Whatever is drawn from a stale answer is dimmed and says what it
 belongs to: the hit list, its count and the hit boxes on the pages name the earlier phrase, and
 the results and their boxes on the pages say "for the earlier text". The boxes are dashed as
-well, so the state does not rest on opacity alone. A failed request shows its message in an
-alert, beside the search field or above the results, and the next answer removes it.
+well, so the state does not rest on opacity alone.
+
+Failures follow one rule on every screen. A request that fails shows its message beside the
+control that made it, in an element with `role="alert"`, and the next answer removes it.
+Whatever is still on screen from before the failure is dimmed and has a line that says it is
+old. Every list a screen loads goes through `liveRun`, so the rule is worked out in one place:
+the documents, the inspection, the layers of a page, the search, the run and the saved specs.
+An action on one row (remove, open, delete) shows its failure in that row. A request has a
+deadline, 30 seconds and 300 for an upload, and passing it is a failure like any other. A page
+image that does not load is replaced by a box that names the page, says why, and has a button
+that loads it again. The boxes Janus read on that page stay.
 
 A spec is saved on the server under a name. What is typed is kept in the browser's storage for
 each document, under the document's hash, so it survives a reload. It is dropped once it is
 saved or equals the spec it was opened from. Removing a document leaves the saved specs as they
 are, and its stored text comes back when the same file is sent again.
 
-The page view is one component that knows nothing about the workbench. It takes a page image, the
-page's size, and a list of boxes with a colour and a label, and it reports the box the pointer
-enters, leaves or clicks. Every screen that draws on a page uses it.
+Two tabs can hold the same document, and storage has one place for its text. Each tab listens
+for the `storage` event. When another tab stores a text for the open document that differs from
+this tab's text, this tab stops writing and shows a bar with two buttons: "Load the other tab's
+text" and "Keep this text". The first takes the other text. The second stores this tab's text,
+and then the other tab is the one that is asked. Typing the same text in both ends the question
+too. When storage throws, because it is full or switched off, the editor says once for the page:
+"The browser cannot store unsaved text. It is kept only while this page stays open."
+
+The page view is one component that knows nothing about the workbench. It imports React and its
+own style sheet. It takes a page image, the page's size, the page's name, and a list of boxes
+with a colour and a label. Every screen that draws on a page uses it.
+
+The boxes of a page are a listbox with one tab stop, and each box is an option named by its
+label. The listbox has the focus and points at the active box with `aria-activedescendant`.
+Tab enters a page at the box last active there, or at the first in reading order. Left and
+Right move in reading order: row after row from the top, each row from the left. Up and Down
+go to the nearest box in that direction, where a step to the side counts three times a step up
+or down. Home and End go to the first and the last box. Page Up and Page Down go to the
+neighbouring page. Enter or Space does what a click does. Escape leaves the boxes and keeps the
+focus on the page. The active box has a ring and is scrolled into view, and the label that
+hover shows is shown for it too. The page view reports two things, "the active box changed" and
+"a box was chosen", and the pointer and the keyboard report them through the same two
+callbacks, so no screen has an action that only the pointer can do. A label says what a box is
+and holds: "Word: Invoice", "Cell, row 2, column 3 of p1t0: 14.00", "Field total: 391.20 GBP,
+extracted". A page that scrolls far away is unmounted and forgets its active box.
+
+`listbox` with `option` is the role because both Chromium and Firefox expose the active
+descendant of a listbox and the name and selected state of each option. `grid` would promise
+rows and columns the boxes do not have, and `application` would switch off a screen reader's
+own keys without telling it what the boxes are.
+
+Each screen has one polite live region, owned by one module. A screen speaks when something a
+person asked for has ended: the page a jump reached, the number of places a search found, the
+outcome of a run ("7 fields extracted, 1 missing"), a document that is ready, a spec that was
+saved, opened or deleted. It never speaks while the pages scroll. The words for a status are
+the library's own, in the live region, in the field rows and in the cells of a records table,
+where the status is part of the accessible name and has a mark beside the colour.
+
+The keyboard shortcuts are registered with one module, which has the one rule for when a key is
+a shortcut. A plain key (`/`, `n`, `p`, `[`, `]`, `?`) is a shortcut only while no text field
+has the focus and no dialog is open. A chord with Ctrl or Command (save, run) types nothing, so
+it works in a text field too. `?` opens a sheet that lists the shortcuts of the screen. Dialogs
+are the browser's `<dialog>`: Escape closes one and the focus returns to the control that
+opened it. In the editor Tab indents, and Escape followed by Tab leaves it.
+
+Page images are white in both themes, so the colours drawn on a page are one palette measured
+against white. A unit test reads the colour tokens from the style sheets and computes the
+contrast ratios: at least 3:1 for every stroke and 4.5:1 for every text on the background it is
+painted on, in both themes, and 3:1 for dimmed text, which always has its label. The dark theme
+shows the page view at nine tenths of its brightness, and the test measures the colours that
+way too. A token the
+test does not measure fails the test. The thin rules between rows are the one named exception:
+they are decoration, and nothing is told by them alone.
 
 Pages are drawn only near the viewport. Each page's size comes from the inspection, so every
 page has its place before its image loads and nothing moves when it does.
