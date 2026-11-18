@@ -34,6 +34,7 @@ from typing import Annotated, Any, Literal, cast
 
 import yaml
 from pydantic import (
+    AfterValidator,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -81,8 +82,10 @@ class Records:
     What the page cannot show, the spec declares. `stop` names the rows that end the table and
     `skip` the rows to leave out of it, each by the text the row begins with. `continues` says
     that the table runs over pages: "header" over each following page that opens with the same
-    header, "rows" over each following page that opens with rows on the same column edges; with
-    None a records field reads one table on one page. `filled`, for tables without rules only,
+    header, "rows" over each following page that opens with rows on the same column edges, and
+    "none" says it is the first table under the header only, ending on its page or where the
+    header is printed again; with None a records field reads one table on one page and the
+    header printed again anywhere leaves the field ambiguous. `filled`, for tables without rules only,
     names the columns every record fills on its first line (`filled_on` "first") or on its last
     line ("last"), so that a printed line filling only some columns can be given to a record;
     without it such a line makes the field ambiguous.
@@ -91,7 +94,7 @@ class Records:
     header: tuple[tuple[str, str], ...]  # (key, printed column header)
     stop: tuple[str, ...] = ()
     skip: tuple[str, ...] = ()
-    continues: Literal["header", "rows"] | None = None
+    continues: Literal["header", "rows", "none"] | None = None
     filled: tuple[str, ...] = ()
     filled_on: Literal["first", "last"] = "first"
 
@@ -151,8 +154,18 @@ def _listed(value: Any) -> Any:
     return (value,) if isinstance(value, str) else value
 
 
+def _prints(value: str) -> str:
+    """A label, header, heading or row label must keep some text once it is normalised the way
+    page text is, or it would match everything or nothing."""
+    if not normalize_label(value):
+        raise PydanticCustomError("no_text", "no text", {"value": value})
+    return value
+
+
 Text = Annotated[StrictStr, StringConstraints(pattern=r"\S")]
 Names = Annotated[tuple[Text, ...], BeforeValidator(_listed), Constraint(min_length=1)]
+Printed = Annotated[StrictStr, AfterValidator(_prints)]  # compared with what the page prints
+PrintedNames = Annotated[tuple[Printed, ...], BeforeValidator(_listed), Constraint(min_length=1)]
 Index = Annotated[StrictInt, Constraint(ge=0)]
 Positive = Annotated[StrictInt, Constraint(ge=1)]
 Number = StrictInt | StrictFloat
@@ -176,8 +189,8 @@ class _Model(BaseModel):
 
 class _CellSpec(_Model):
     table: TableId | Positive
-    row: Index | Text
-    column: Index | Text
+    row: Index | Printed
+    column: Index | Printed
 
 
 class _FilledSpec(_Model):
@@ -186,10 +199,10 @@ class _FilledSpec(_Model):
 
 
 class _RecordsSpec(_Model):
-    header: Annotated[dict[StrictStr, Text], Constraint(min_length=1)]
-    stop: Names = ()
-    skip: Names = ()
-    continues: Literal["header", "rows"] | None = None
+    header: Annotated[dict[StrictStr, Printed], Constraint(min_length=1)]
+    stop: PrintedNames = ()
+    skip: PrintedNames = ()
+    continues: Literal["header", "rows", "none"] | None = None
     filled: _FilledSpec | None = None
 
 
@@ -213,13 +226,13 @@ TypeSpec = Text | _TypeSpec
 
 
 class _FieldSpec(_Model):
-    label: Names | None = None
+    label: PrintedNames | None = None
     cell: _CellSpec | None = None
     records: _RecordsSpec | None = None
-    section: Names | None = None
+    section: PrintedNames | None = None
     region: _RegionSpec | None = None
-    column: Text | None = None
-    under: Text | None = None
+    column: Printed | None = None
+    under: Printed | None = None
     type: TypeSpec = "text"
     columns: dict[StrictStr, TypeSpec] = {}
     pages: Positive | PageRange | None = None
@@ -246,7 +259,7 @@ _EXPECTED = {
     "records.header": "a mapping from keys to printed column headers",
     "records.stop": "a label or a list of labels",
     "records.skip": "a label or a list of labels",
-    "records.continues": "header or rows",
+    "records.continues": "header, rows or none",
     "records.filled": "a mapping with first or last",
     "records.filled.first": "a header key or a list of them",
     "records.filled.last": "a header key or a list of them",
@@ -299,7 +312,8 @@ def _validate[M: BaseModel](model: type[M], raw: Any, where: str) -> M:
         return model.model_validate(raw)
     except ValidationError as exc:
         # The deepest error is the most specific: inside a mapping rather than about its kind.
-        error = max(exc.errors(), key=lambda e: len(e["loc"]))
+        # A string that prints nothing says more than the other arm of a union refusing it.
+        error = max(exc.errors(), key=lambda e: (e["type"] == "no_text", len(e["loc"])))
         raise SpecError(_message(error, model, where)) from None
 
 
@@ -313,6 +327,11 @@ def _message(error: Any, model: type[BaseModel], where: str) -> str:
 
     if kind == "no_value":
         return f"{where}: {at(str(error['ctx']['key']))}: no value given"
+    if kind == "no_text":
+        return (
+            f"{where}: {key}: {_shown(error['ctx']['value'])} is empty once spaces and a "
+            "trailing colon are dropped, so it would match no printed text"
+        )
     if kind == "extra_forbidden":
         return f"{where}: unknown key {at(str(loc[-1]))}"
     if kind == "missing" and loc and key.endswith(str(loc[-1])):
@@ -403,6 +422,16 @@ def _field(path: str, body: _FieldSpec) -> Field:
             filled = getattr(r.filled, on)
             if unknown := [k for k in filled if k not in r.header]:
                 raise SpecError(f"{path}: records.filled.{on} {unknown[0]!r} is not a header key")
+        if bad := [k for k in r.header if not re.fullmatch(r"[A-Za-z_][\w-]*", k)]:
+            raise SpecError(
+                f"{path}: records.header: keys are letters, digits, _ and -, not {bad[0]!r}"
+            )
+        printed: dict[str, str] = {}
+        for k, h in r.header.items():
+            if (other := printed.setdefault(normalize_label(h), k)) != k:
+                # A ruled table would give both keys the one column; a printed row has no
+                # second such header for the other. The spec cannot mean either.
+                raise SpecError(f"{path}: records.header: {other} and {k} both name {h!r}")
         both = {normalize_label(s) for s in r.stop} & {normalize_label(s) for s in r.skip}
         if both:
             raise SpecError(f"{path}: records.stop and records.skip both name {sorted(both)[0]!r}")

@@ -166,3 +166,49 @@ def test_malformed_spec_documents(source, message):
     with pytest.raises(SpecError) as info:
         load_spec(source)
     assert str(info.value).startswith(message), str(info.value)
+
+
+EMPTY = "is empty once spaces and a trailing colon are dropped, so it would match no printed text"
+
+
+@pytest.mark.parametrize("text", [":", " : ", "::", "   "])
+@pytest.mark.parametrize(
+    ("body", "key"),
+    [
+        (lambda t: {"label": t}, "label"),
+        (lambda t: {"label": ["Total", t]}, "label"),
+        (lambda t: {"label": "Total", "column": t}, "column"),
+        (lambda t: {"section": t}, "section"),
+        (lambda t: {"section": "Findings", "under": t}, "under"),
+        (lambda t: {"cell": {"table": 1, "row": t, "column": 0}}, "cell.row"),
+        (lambda t: {"cell": {"table": 1, "row": 0, "column": t}}, "cell.column"),
+        (lambda t: {"records": {"header": {"a": t}}}, "records.header.a"),
+        (lambda t: {"records": {"header": {"a": "A"}, "stop": [t]}}, "records.stop"),
+        (lambda t: {"records": {"header": {"a": "A"}, "skip": t}}, "records.skip"),
+    ],
+)
+def test_text_that_normalises_to_nothing_is_refused_by_name(body, key, text):
+    with pytest.raises(SpecError) as info:
+        load_spec({"fields": {"x": body(text)}})
+    assert str(info.value).startswith(f"x: {key}"), str(info.value)
+    assert EMPTY in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        ({"a": "Qty", "b": "qty:"}, "x: records.header: a and b both name 'qty:'"),
+        ({"a/b": "Qty"}, "x: records.header: keys are letters, digits, _ and -, not 'a/b'"),
+    ],
+)
+def test_records_headers_name_one_column_each(header, message):
+    with pytest.raises(SpecError) as info:
+        load_spec({"fields": {"x": {"records": {"header": header}}}})
+    assert str(info.value) == message
+
+
+def test_continues_takes_header_rows_or_none():
+    for form in ("header", "rows", "none"):
+        load_spec({"fields": {"x": {"records": {"header": {"a": "A"}, "continues": form}}}})
+    with pytest.raises(SpecError, match=r"records\.continues: expected header, rows or none"):
+        load_spec({"fields": {"x": {"records": {"header": {"a": "A"}, "continues": "never"}}}})

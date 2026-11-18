@@ -3,7 +3,7 @@ import pytest
 import janus_pdf
 from janus_pdf import Proposal, SpecError, compare, extract, load_spec
 from janus_pdf._index import Index
-from support import INVOICE
+from support import INVOICE, text_layer
 
 
 def run(layer, fields, proposer=None):
@@ -326,3 +326,9 @@ def test_the_index_is_built_once_per_layer(monkeypatch):
         run(layer, {"total": {"label": "Total due"}, "missing": {"label": "Nothing like this"}})
     janus_pdf.inspect(layer, find="Total")
     assert len(built) == 1
+
+
+def test_a_label_that_normalises_to_nothing_is_printed_nowhere():
+    view = Index(text_layer("Total: 12\n: :\n")).view(None)
+    for label in ("", ":", " : "):
+        assert list(view.find_label(label)) == [] and view.suggestions(label) == []

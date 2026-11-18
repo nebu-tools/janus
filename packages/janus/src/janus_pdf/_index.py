@@ -196,8 +196,11 @@ class Index:
             i += 1
 
     def find_label(self, label: str) -> Iterator[Span]:
-        """Where `label` begins a printed line or a table cell and ends on a token boundary."""
+        """Where `label` begins a printed line or a table cell and ends on a token boundary. A
+        label that normalises to nothing is printed nowhere."""
         needle = normalize_label(label)
+        if not needle:
+            return
         text = self.layer.text
         for m in re.finditer(re.escape(needle), self._norm):
             start = self._origin[m.start()]
@@ -212,6 +215,8 @@ class Index:
         """Up to three lines or cells on pages `on` accepts whose opening words come close to
         `label`, best first."""
         needle = normalize_label(label)
+        if not needle:
+            return []
         if self._units is None:
             spans = [(ln.start, ln.end) for ln in self.layer.lines] + [
                 (c.start, c.end) for c in self.layer.cells if c.end > c.start
