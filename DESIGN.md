@@ -251,7 +251,7 @@ declares do.
 
 | Question                                      | Settled by                                                                   |
 | --------------------------------------------- | ---------------------------------------------------------------------------- |
-| where the table starts                        | the page: the first row, in reading order, that holds every header           |
+| where the table starts                        | the page: the first row, in reading order, that is the header                |
 | what the header printed again means           | the spec: `continues:`, `skip:`, `stop:` or `pages:`                         |
 | where it ends on a page                       | the page: the grid's end, a line that does not fit, the page's end; `stop:`  |
 | which rows are left out                       | the spec: `skip:`; over pages, running heads and feet                        |
@@ -270,10 +270,33 @@ starts, ends or is centred within 1.5 points of where that column's header, or a
 read in it, does. The first line that does not fit ends the table, and the message quotes it. A
 gap between lines ends nothing.
 
+#### The header
+
+A row is the header when each declared header is the whole text of a cell of its own. In a ruled
+table a cell is a cell of the grid. Without rules, a cell is the run of a printed row's words that
+one line of the layer holds: where one line ends and the next begins is the PDF's own text, and
+Janus measures no gap. Text is compared after `normalize_label`. A header's words inside a longer
+cell never match, so the body row "Item Qty adapter | 2" under `header: {item: Item, qty: Qty}`
+is a record, and two headers cannot come from one cell. One function, `_header_in`, makes this
+test for every kind of table and every place the header may be printed.
+
+The first match in reading order sets the columns: each header's extent, and one for each other
+cell of the row. Every later row, on the same page, on a page the table continues onto under
+`continues: header` or `continues: rows`, or in a table of the other kind, is the header printed
+again only when it passes the same test and each header's cell is centred in that header's
+column. So "Qty | Item" under "Item | Qty" is a record, and so is "Qty | 3", where `Qty` stands
+in the Item column. Such a row is read like any other: a cell that fails its column's type makes
+the field `invalid`.
+
+A header printed over two lines, such as "Item" with "description" under it, is two printed
+rows, and neither holds the whole text "Item description": the field is `missing`. Declare the
+texts of one line as the header and leave the other line out with `skip:`, or end the table
+before it with `stop:`. Janus does not join lines by their spacing, here or anywhere.
+
 #### The header printed again
 
-Every row that holds every header is a match: a row of a ruled table, or a printed row outside
-the ruled tables. The first match in reading order is the table read, whatever its kind. Every
+Every row that is the header is a match: a row of a ruled table, or a printed row outside the
+ruled tables. The first match in reading order is the table read, whatever its kind. Every
 other match ends that table where it stands, and the page does not say whether it goes on with
 the same table or heads another. That is the question a label printed twice with two values
 raises, so the answer is the same: the field is `ambiguous`, with no value, until a key settles

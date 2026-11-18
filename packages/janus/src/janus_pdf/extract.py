@@ -187,7 +187,9 @@ def _records(view: View, f: Field, loc: Records) -> list[FieldResult]:
     rows = locate_records(view, loc)
     if rows is None:
         headers = ", ".join(h for _, h in loc.header)
-        message = f"no table row or printed row holds all of: {headers}"
+        message = (
+            f"no table row or printed row prints each of these in a cell of its own: {headers}"
+        )
         return [FieldResult(f.path, "missing", method="records", message=message)]
     printed = clean(view.text(rows.header.start, rows.header.end))
     anchors = (make_anchor(view.layer, rows.header),)

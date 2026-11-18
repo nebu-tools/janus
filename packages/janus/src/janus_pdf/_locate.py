@@ -81,8 +81,11 @@ def locate_records(view: View, loc: Records) -> Rows | None:
     matches = sorted([*_table_matches(view, loc), *_line_matches(view, loc)], key=lambda m: m.start)
     if not matches:
         return None
-    first, *others = matches
-    return _follow(view, loc, first.reader(), others)
+    first, *rest = matches
+    reader = first.reader()
+    # A later row is the header printed again only with each header in the column the first set.
+    others = [m for m in rest if _header_in(m.units, loc, reader.cols)]
+    return _follow(view, loc, reader, others)
 
 
 def _strip(view: View, start: int, end: int) -> Span | None:
@@ -389,7 +392,9 @@ def _region(view: View, loc: Region) -> Found:
 # --- records: what the kinds of table share -----------------------------------------------------
 #
 # Every place the declared header is printed, in a ruled table or in a printed row, is a match
-# (`_Match`), and the first in reading order is the table that is read, whatever its kind. Its
+# (`_Match`): a row where each header is the whole text of a cell of its own (`_header_in`). The
+# first in reading order is the table that is read, whatever its kind, and sets each header's
+# column; a later row is a match only with each header in its column. Its
 # rows become printed lines (`_Line`). Both kinds of table are read by a `_Reader` and go through
 # the same steps in `_follow`: a `stop:` row ends the table, `skip:` rows are left out, another
 # match ends it, a line that does not fit the columns ends a table without rules, and the table
@@ -435,6 +440,7 @@ class _Match:
     page: int
     words: frozenset[int]  # its words, by start offset
     ruled: bool
+    units: "tuple[_Unit, ...]"  # its cells, left to right
     reader: Callable[[], "_Reader"]  # the reader of the table it heads
 
 
@@ -446,6 +452,76 @@ class _Cut:
     stopped: bool = False  # a `stop:` row
     misfit: _Line | None = None  # a line that does not fit the columns
     repeat: _Line | None = None  # the header printed again
+
+
+@dataclass(frozen=True, slots=True)
+class _Unit:
+    """One cell of a printed row: a cell of a ruled table, or, without rules, the words of the row
+    that one printed line of the layer holds. `text` is its whole text, normalised."""
+
+    text: str
+    words: tuple[Word, ...]
+    x0: float  # where its words start and end across the page's reading frame
+    x1: float
+    bottom: float
+    col: int = -1  # its grid column, in a ruled table
+
+
+@dataclass(frozen=True, slots=True)
+class _Columns:
+    order: list[str]  # keys left to right; "\0n" for a printed column the spec leaves out
+    bounds: dict[str, tuple[float, float]]
+    extents: dict[str, tuple[float, float]]  # where each header starts and ends
+    top: float  # rows start below this: the bottom of the header row
+
+    def of(self, x0: float, x1: float) -> str:
+        """The column a word from `x0` to `x1` is printed in."""
+        mid = (x0 + x1) / 2
+        return next(k for k in self.order if self.bounds[k][0] <= mid < self.bounds[k][1])
+
+
+def _header_in(units: tuple[_Unit, ...], loc: Records, cols: _Columns | None) -> dict[str, int]:
+    """Where each header of `loc` stands in a row of `units`, by key, or nothing when the row is
+    not the header. Each header must be the whole text of a cell of its own: words inside a
+    longer cell never match. Given the columns the first header set, each must also stand in its
+    own column. This is the one test of a header, ruled or not, first or printed again."""
+    keys = {normalize_label(h): k for k, h in loc.header}
+    found: dict[str, int] = {}
+    for i, u in enumerate(units):
+        key = keys.get(u.text)
+        if key is not None and key not in found and (cols is None or cols.of(u.x0, u.x1) == key):
+            found[key] = i
+    return found if len(found) == len(keys) else {}
+
+
+def _columns(units: tuple[_Unit, ...], found: dict[str, int]) -> _Columns:
+    """The columns a header row sets: one for each header, and one for each other cell it
+    prints, which still bounds its neighbours although its words are dropped."""
+    extents = {k: (units[i].x0, units[i].x1) for k, i in found.items()}
+    for i, u in enumerate(units):
+        if i not in found.values():
+            extents[f"\0{len(extents)}"] = (u.x0, u.x1)
+    order = sorted(extents, key=lambda k: extents[k][0])
+    # Column boundaries halfway between neighbouring headers; the first and last are open.
+    bounds = {}
+    for i, k in enumerate(order):
+        lo = -1e9 if i == 0 else (extents[order[i - 1]][1] + extents[k][0]) / 2
+        hi = 1e9 if i == len(order) - 1 else (extents[k][1] + extents[order[i + 1]][0]) / 2
+        bounds[k] = (lo, hi)
+    return _Columns(order, bounds, extents, max(u.bottom for u in units))
+
+
+def _unit(view: View, words: list[Word], col: int = -1) -> _Unit:
+    boxes = [view.upright(w.box) for w in words]
+    text = normalize_label(" ".join(view.text(w.start, w.end) for w in words))
+    return _Unit(
+        text,
+        tuple(words),
+        min(b[0] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+        col,
+    )
 
 
 def _on(pages: list[int]) -> str:
@@ -526,6 +602,7 @@ class _Reader:
     page: int  # the page the header is printed on
     header: Span
     header_words: list[Word]
+    cols: _Columns  # the columns the header sets, where the header printed again must stand
 
     def __init__(self, view: View, loc: Records) -> None:
         self.view, self.loc = view, loc
@@ -780,28 +857,32 @@ def _another(m: _Match, reader: _Reader, cut: _Cut, first: int, last: int) -> st
 # --- records in tables --------------------------------------------------------------------------
 
 
-_HeaderRow = tuple[int, dict[str, int], list[TableCell]]
-
-
-def _header_rows(view: View, table: Table, wanted: list[tuple[str, str]]) -> Iterator[_HeaderRow]:
-    """Each row of `table` that holds every wanted header: its number, each key's column, and
-    its printed cells left to right."""
-    cells = view.by_table[table.id]
-    for r in range(table.rows):
-        row = {normalize_label(view.text(c.start, c.end)): c for c in cells if c.row == r}
-        if all(h in row for _, h in wanted):
-            printed = sorted((c for c in row.values() if c.end > c.start), key=lambda c: c.col)
-            yield r, {k: row[h].col for k, h in wanted}, printed
-
-
-def _header_row(view: View, table: Table, wanted: list[tuple[str, str]]) -> _HeaderRow | None:
-    return next(_header_rows(view, table, wanted), None)
+_HeaderRow = tuple[int, tuple[_Unit, ...], dict[str, int]]
 
 
 def _printed_row(view: View, table: Table, r: int) -> list[TableCell]:
     """The cells that start in row `r` and print something, left to right."""
     cells = view.by_table[table.id]
     return sorted((c for c in cells if c.row == r and c.end > c.start), key=lambda c: c.col)
+
+
+def _ruled_units(view: View, table: Table, r: int) -> tuple[_Unit, ...]:
+    return tuple(
+        _unit(view, words, c.col)
+        for c in _printed_row(view, table, r)
+        if (words := list(view.words_between(c.start, c.end)))
+    )
+
+
+def _header_rows(
+    view: View, table: Table, loc: Records, cols: _Columns | None
+) -> Iterator[_HeaderRow]:
+    """Each row of `table` that is the header (`_header_in`): its number, its cells and where
+    each header stands among them."""
+    for r in range(table.rows):
+        units = _ruled_units(view, table, r)
+        if found := _header_in(units, loc, cols):
+            yield r, units, found
 
 
 def _table_lines(view: View, table: Table, start: int, cols: dict[str, int]) -> list[_Line]:
@@ -836,32 +917,33 @@ def _edges(view: View, table: Table) -> list[float]:
 class _Ruled(_Reader):
     method = "records"
 
-    def __init__(
-        self, view: View, loc: Records, table: Table, found: tuple[int, dict, list]
-    ) -> None:
+    def __init__(self, view: View, loc: Records, table: Table, found: _HeaderRow) -> None:
         super().__init__(view, loc)
         self.table = table
-        row, self.cols, printed = found
+        row, units, at = found
+        self.grid = {k: units[i].col for k, i in at.items()}  # each key's grid column
+        self.cols = _columns(units, at)
         self.start = row + 1
         self.page = table.page
-        self.header = Span(min(c.start for c in printed), max(c.end for c in printed))
-        self.header_words = [w for c in printed for w in view.words_between(c.start, c.end)]
-        self.wanted = [(k, normalize_label(h)) for k, h in loc.header]
+        self.header_words = [w for u in units for w in u.words]
+        self.header = Span(
+            min(w.start for w in self.header_words), max(w.end for w in self.header_words)
+        )
 
     def lines(self, drop: bool) -> list[_Line]:  # noqa: ARG002 - nothing in a cell is furniture
-        return _table_lines(self.view, self.table, self.start, self.cols)
+        return _table_lines(self.view, self.table, self.start, self.grid)
 
     def open(self, page: int) -> _Opening | None:
-        """The first table on `page` that holds the header or has the same column edges; the
-        lines above it are those printed above the table that are not running heads, and its
-        own rows above the header or its title rows."""
+        """The first table on `page` that prints the header again in its columns or has the
+        same column edges; the lines above it are those printed above the table that are not
+        running heads, and its own rows above the header or its title rows."""
         view = self.view
         for t in (t for t in view.tables if t.page == page):
-            if found := _header_row(view, t, self.wanted):
-                head, start, cols, header = found[0], found[0] + 1, found[1], True
-                words = frozenset(
-                    w.start for c in found[2] for w in view.words_between(c.start, c.end)
-                )
+            if found := next(_header_rows(view, t, self.loc, self.cols), None):
+                r, units, at = found
+                head, start, header = r, r + 1, True
+                grid = {k: units[i].col for k, i in at.items()}
+                words = frozenset(w.start for u in units for w in u.words)
             else:
                 a, b = _edges(view, self.table), _edges(view, t)
                 if len(a) != len(b) or not all(
@@ -869,7 +951,7 @@ class _Ruled(_Reader):
                 ):
                     continue
                 titles = {c.row for c in view.by_table[t.id] if c.role == "title"}
-                head, start, cols, header = len(titles), len(titles), self.cols, False
+                head, start, grid, header = len(titles), len(titles), self.grid, False
                 words = frozenset()
             top = _top(view, t.box)
             above = [
@@ -881,21 +963,22 @@ class _Ruled(_Reader):
             for r in range(head):
                 if texts := [view.text(c.start, c.end) for c in _printed_row(view, t, r)]:
                     above.append((texts[0], " ".join(texts)))
-            return _Opening(_table_lines(view, t, start, cols), header, above, head=words)
+            return _Opening(_table_lines(view, t, start, grid), header, above, head=words)
         return None
 
 
 def _table_matches(view: View, loc: Records) -> Iterator[_Match]:
-    """Each row of a ruled table that holds every header."""
-    wanted = [(k, normalize_label(h)) for k, h in loc.header]
+    """Each row of a ruled table that is the header, wherever each header stands in it."""
     for table in view.tables:
-        for found in _header_rows(view, table, wanted):
-            words = [w for c in found[2] for w in view.words_between(c.start, c.end)]
+        for found in _header_rows(view, table, loc, None):
+            units = found[1]
+            words = frozenset(w.start for u in units for w in u.words)
             yield _Match(
-                min(c.start for c in found[2]),
+                min(words),
                 table.page,
-                frozenset(w.start for w in words),
+                words,
                 True,
+                units,
                 lambda table=table, found=found: _Ruled(view, loc, table, found),
             )
 
@@ -904,19 +987,6 @@ def _table_matches(view: View, loc: Records) -> Iterator[_Match]:
 #
 # Geometry here is in each page's reading frame (`View.upright`), so a table printed on a page
 # the viewer turns is read along its rows.
-
-
-@dataclass(frozen=True, slots=True)
-class _Columns:
-    order: list[str]  # keys left to right; "\0n" for a printed column the spec leaves out
-    bounds: dict[str, tuple[float, float]]
-    extents: dict[str, tuple[float, float]]  # where each header starts and ends
-    top: float  # rows start below this: the bottom of the header row
-
-    def of(self, x0: float, x1: float) -> str:
-        """The column a word from `x0` to `x1` is printed in."""
-        mid = (x0 + x1) / 2
-        return next(k for k in self.order if self.bounds[k][0] <= mid < self.bounds[k][1])
 
 
 _Printed = list[tuple[Word, Rect]]  # one printed row: its words and their upright boxes
@@ -959,36 +1029,16 @@ def _page_rows(view: View, page: int, loc: Records, cols: _Columns | None) -> li
     return _split(view, page, loc, cols)[0]
 
 
-def _columns(view: View, row: _Printed, loc: Records) -> _Columns | None:
-    """The columns a printed header row sets, when it holds every header of `loc`."""
-    texts = [normalize_label(view.text(w.start, w.end)) for w, _ in row]
-    extents: dict[str, tuple[float, float]] = {}
-    claimed: set[int] = set()
-    for key, header in loc.header:
-        parts = normalize_label(header).split()
-        for i in range(len(texts) - len(parts) + 1):
-            if texts[i : i + len(parts)] == parts and not claimed & set(range(i, i + len(parts))):
-                extents[key] = (row[i][1][0], row[i + len(parts) - 1][1][2])
-                claimed.update(range(i, i + len(parts)))
-                break
-    if len(extents) != len(loc.header):
-        return None
-    # A printed column the spec leaves out still bounds its neighbours; its words are dropped.
-    run: list[Rect] = []
-    for i, wb in enumerate([*row, None]):
-        if wb is not None and i not in claimed:
-            run.append(wb[1])
-        elif run:
-            extents[f"\0{len(extents)}"] = (run[0][0], run[-1][2])
-            run = []
-    order = sorted(extents, key=lambda k: extents[k][0])
-    # Column boundaries halfway between neighbouring headers; the first and last are open.
-    bounds = {}
-    for i, k in enumerate(order):
-        lo = -1e9 if i == 0 else (extents[order[i - 1]][1] + extents[k][0]) / 2
-        hi = 1e9 if i == len(order) - 1 else (extents[k][1] + extents[order[i + 1]][0]) / 2
-        bounds[k] = (lo, hi)
-    return _Columns(order, bounds, extents, max(b[3] for _, b in row))
+def _layout_units(view: View, row: _Printed) -> tuple[_Unit, ...]:
+    """The cells of a printed row outside the ruled tables: the words each printed line of the
+    layer holds in it, left to right. Where one line ends and the next begins is the layer's
+    own; Janus measures no gap."""
+    lines: dict[int, list[Word]] = {}
+    for w, _ in row:
+        if view.cell_at(w.start) is None:
+            line = view.line_at(w.start)
+            lines.setdefault(line.start if line is not None else -1 - w.start, []).append(w)
+    return tuple(sorted((_unit(view, ws) for ws in lines.values()), key=lambda u: u.x0))
 
 
 def _layout_line(view: View, row: _Printed, cols: _Columns, page: int) -> _Line:
@@ -1040,19 +1090,15 @@ class _Layout(_Reader):
     method = "records:layout"
 
     def __init__(
-        self,
-        view: View,
-        loc: Records,
-        heads: dict[int, list[int]],
-        page: int,
-        row: _Printed,
-        cols: _Columns,
+        self, view: View, loc: Records, page: int, units: tuple[_Unit, ...], cols: _Columns
     ) -> None:
         super().__init__(view, loc)
-        self.heads, self.page, self.cols = heads, page, cols
-        self.header = Span(min(w.start for w, _ in row), max(w.end for w, _ in row))
-        self.header_words = [w for w, _ in row]
-        self.top = min(b[1] for _, b in row)
+        self.page, self.cols = page, cols
+        self.header_words = [w for u in units for w in u.words]
+        self.header = Span(
+            min(w.start for w in self.header_words), max(w.end for w in self.header_words)
+        )
+        self.top = min(view.upright(w.box)[1] for w in self.header_words)
         self.edges: _Edges = {k: [e] for k, e in cols.extents.items()}
 
     def lines(self, drop: bool) -> list[_Line]:
@@ -1080,20 +1126,21 @@ class _Layout(_Reader):
         ]
 
     def open(self, page: int) -> _Opening | None:
-        """The first printed row of `page`, after running heads, that holds every header, or
-        fills at least two columns on the edges the table's first page sets; the rows above it
-        are the lines above the table."""
+        """The first printed row of `page`, after running heads, that prints the header again in
+        its columns, or fills at least two columns on the edges the table's first page sets; the
+        rows above it are the lines above the table."""
         view, loc = self.view, self.loc
         rows = _page_rows(view, page, loc, self.cols)
-        starts = set(self.heads.get(page, []))
         for i, r in enumerate(rows):
             above = [
                 (x.first, x.text)
                 for x in (_layout_line(view, a, self.cols, page) for a in rows[:i])
             ]
-            if any(w.start in starts for w, _ in r) and (cols := _columns(view, r, loc)):
+            units = _layout_units(view, r)
+            if found := _header_in(units, loc, self.cols):
+                cols = _columns(units, found)
                 edges = {k: [e] for k, e in cols.extents.items()}
-                head = frozenset(w.start for w, _ in r)
+                head = frozenset(w.start for u in units for w in u.words)
                 return _Opening(_layout_lines(view, rows, cols, page), True, above, edges, head)
             line = _layout_line(view, r, self.cols, page)
             if len(line.cells) >= 2 and _fits(line, self.edges):
@@ -1153,24 +1200,21 @@ class _Layout(_Reader):
 
 
 def _line_matches(view: View, loc: Records) -> Iterator[_Match]:
-    """Each printed row, outside ruled tables, that holds every header: the rows where the first
-    header is printed whose words set a column for each."""
-    heads: dict[int, list[int]] = {}
-    for span in view.find_label(loc.header[0][1]):
-        if not view.cell_at(span.start):
-            heads.setdefault(view.page_of(span.start), []).append(span.start)
-    for page, starts in heads.items():
-        rows = _page_rows(view, page, loc, None)
-        seen: set[int] = set()
-        for start in starts:
-            row = next((r for r in rows if any(w.start == start for w, _ in r)), None)
-            if row is None or id(row) in seen or (cols := _columns(view, row, loc)) is None:
+    """Each printed row, outside ruled tables, that is the header, wherever each header stands
+    in it."""
+    for page in view.numbers:
+        for row in _page_rows(view, page, loc, None):
+            units = _layout_units(view, row)
+            if not (found := _header_in(units, loc, None)):
                 continue
-            seen.add(id(row))
+            words = frozenset(w.start for u in units for w in u.words)
             yield _Match(
-                min(w.start for w, _ in row),
+                min(words),
                 page,
-                frozenset(w.start for w, _ in row),
+                words,
                 False,
-                lambda page=page, row=row, cols=cols: _Layout(view, loc, heads, page, row, cols),
+                units,
+                lambda page=page, units=units, found=found: _Layout(
+                    view, loc, page, units, _columns(units, found)
+                ),
             )

@@ -64,6 +64,14 @@ between lines and the words in a row never end it. A subtotal, total or "carried
 reads as a record unless `stop:` ends the table there or `skip:` leaves the row out. The message
 lists each row `skip:` leaves out with its page.
 
+A row is the header when each declared header is the whole text of a cell of its own: a cell
+of a ruled table, or, without rules, a line of the PDF's text in that row. The header's words
+inside a longer cell, as in a row "Item Qty adapter | 2", do not make it a header, and neither
+does a row that prints one header text as a label, such as "Qty | 3". The header printed again
+must also put each header in the column the first one set; "Qty | Item" is a row. A header
+printed over two lines, such as "Item" with "description" under it, is two rows: declare the
+texts of one line as the header and leave the other out with `skip:`.
+
 The table ends where the header is printed again: lower on the same page, on a later page, or
 over a table of the other kind. The page does not say whether that goes on with the same table
 or heads another, so the field is `ambiguous`, and the message gives the page, until the spec
@@ -121,6 +129,8 @@ What a page does not show, Janus cannot see. A `records` field can be wrong in t
   Without `filled` such a line makes the field `ambiguous`.
 - A cell aligned with neither the left, the right nor the centre of its column ends the table
   there, and the message quotes the line.
+- Without rules, a cell is a line of the PDF's text. A PDF that prints two headers as one line
+  of text, with spaces between them, has no header row there, and the field is `missing`.
 - The rows' set is taken from the first record. Under a header set like the rows, such as a
   bold header over bold rows, the set gives no evidence. A first record set unlike the rest,
   such as a bold first row under a regular header, makes the field `incomplete`.

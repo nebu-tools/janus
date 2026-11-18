@@ -637,6 +637,32 @@ def packing_list() -> None:
     w.save(HERE / "packing-list.pdf", "Packing list")
 
 
+# --- Rows that hold the header's words ----------------------------------------------------------
+
+
+def header_cells() -> None:
+    """Body rows that print the header's words without being the header Item / Qty: the words
+    inside a longer cell, without rules (page 1) and ruled (page 2); the header's texts in
+    swapped columns, without rules (page 3) and ruled (page 4); a row labelled with one header
+    text beside a number, and a total row (page 5). Page 6 prints a header over two lines:
+    "Item" with "description" under it, beside "Qty"."""
+    w = Writer()
+    head = ("Item", "Qty")
+    words = [head, ("Apple", "1"), ("Item Qty adapter", "2"), ("Pear", "3"), ("Total", "6")]
+    swapped = [head, ("Apple", "1"), ("Qty", "Item"), ("Pear", "2")]
+    _printed(w, w.page(), 100, words)
+    _ruled(w, w.page(), 90, words)
+    _printed(w, w.page(), 100, swapped)
+    _ruled(w, w.page(), 90, swapped)
+    _printed(w, w.page(), 100, [head, ("Apple", "1"), ("Qty", "3"), ("Item", "2"), ("Total", "6")])
+    page = w.page()
+    w.text(page, MARGIN, 100, "Item", bold=True)
+    w.text(page, MARGIN + 240, 100, "Qty", bold=True)
+    w.text(page, MARGIN, 100 + LEADING, "description", bold=True)
+    _printed(w, page, 100 + 2 * LEADING + 6, [("Apple", "1"), ("Pear", "2")])
+    w.save(HERE / "header-cells.pdf", "Header cells")
+
+
 if __name__ == "__main__":
     report()
     invoice()
@@ -644,3 +670,4 @@ if __name__ == "__main__":
     inspection_report()
     stock_ledger()
     packing_list()
+    header_cells()
