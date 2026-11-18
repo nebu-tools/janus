@@ -124,7 +124,7 @@ def inspect(
             hits.append(Hit(box.page, clean(printed), box, starts, cell))
     return Inspection(
         layer.document_hash,
-        layer.output_hash,
+        layer.id,
         layer.recipe.engine,
         pages,
         tuple(tables),

@@ -178,7 +178,7 @@ def _table_grid(item: Any, rect: Rect, page_height: float) -> Grid | None:
             row_span=max(1, c.row_span),
             col_span=max(1, c.col_span),
             rect=_top_left(c.bbox, page_height) if c.bbox is not None else (0.0, 0.0, 0.0, 0.0),
-            header=bool(c.column_header),
+            role="header" if c.column_header else "body",
         )
         for c in data.table_cells
     ]

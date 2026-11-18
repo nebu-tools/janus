@@ -69,9 +69,9 @@ import janus_pdf
 layer = janus_pdf.read("invoice.pdf")
 extraction = janus_pdf.extract(layer, janus_pdf.load_spec("invoice.yaml"))
 
-extraction.data["total"]           # {"amount": "627.00", "currency": "GBP"}
+extraction.data["total"]  # {"amount": "627.00", "currency": "GBP"}
 result = extraction.result("total")
-result.anchor.boxes[0]             # the page and box of "£627.00"
+result.anchor.boxes[0]  # the page and box of "£627.00"
 
 janus_pdf.compare(extraction, {"total": {"amount": "627.00"}})
 ```

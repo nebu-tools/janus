@@ -1,7 +1,7 @@
 """Parsers: PyMuPDF (the base layer) and pypdfium2 (the second engine for differential checks).
 
-Both read words with boxes in the page's reading frame and hand them to `layout.assemble`, which
-writes the canonical text and maps boxes back to the unrotated frame.
+Both read words in the unrotated page, turn them into the page's reading frame and hand them to
+`layout.assemble`, which writes the canonical text and maps boxes to the page as displayed.
 """
 
 import ctypes
@@ -30,6 +30,7 @@ from janus_pdf.document.model import ParserRecipe, RawLayer
 from janus_pdf.document.tables import (
     TABLES_VERSION,
     caption_regions,
+    grid_from_ruling,
     grid_from_words,
     horizontal_rules,
 )
@@ -118,13 +119,15 @@ def _segments(page: pymupdf.Page, frame: int) -> list[Rect]:
 
 
 def pymupdf_grids(page: pymupdf.Page, blocks: list[PBlock], frame: int) -> list[Grid]:
-    """Ruled tables from `find_tables` without the Layout model, and three-rule tables found from
-    their captions. Both get their grid from the words."""
+    """Ruled tables from `find_tables` without the Layout model, whose rules give the cells, and
+    three-rule tables found from their captions, whose words give the cells."""
     _quiet()
     width, height = _unrotated_size(page)
     segments = _segments(page, frame)
     rules = horizontal_rules(segments)
     regions = caption_regions(blocks, rules)
+    words = [w for b in blocks for line in b.lines for w in line]
+    grids: list[Grid] = []
     # A ruled table needs vertical edges: stroked verticals or the sides of filled rectangles.
     # Most pages have none, and find_tables is the slowest step of reading a page.
     verticals = sum(
@@ -136,25 +139,26 @@ def pymupdf_grids(page: pymupdf.Page, blocks: list[PBlock], frame: int) -> list[
     except (AttributeError, ValueError, RuntimeError):
         found = []
     for table in found:
-        b = tuple(table.bbox)
-        r = rotate((b[0], b[1], b[2], b[3]), frame, width, height)
-        if (
-            table.row_count >= 2
-            and table.col_count >= 2
-            and not any(
-                min(r[2], q[2]) > max(r[0], q[0]) and min(r[3], q[3]) > max(r[1], q[1])
-                for q in regions
-            )
-        ):
-            regions.append(r)
-    words = [w for b in blocks for line in b.lines for w in line]
-    grids: list[Grid] = []
+        rows = [
+            [None if c is None else rotate(tuple(c), frame, width, height) for c in row.cells]
+            for row in table.rows
+        ]
+        grid = grid_from_ruling(rows)
+        if grid is not None and any(contains(grid.rect, w.cx, w.cy) for w in words):
+            grids.append(grid)
+    # Where a table is ruled, its rules decide the cells, even when it also has a caption.
     for region in regions:
+        if any(_overlap(region, g.rect) for g in grids):
+            continue
         inside = [w for w in words if contains(region, w.cx, w.cy)]
         grid = grid_from_words(region, inside, rules) if inside else None
         if grid is not None:
             grids.append(grid)
     return grids
+
+
+def _overlap(a: Rect, b: Rect) -> bool:
+    return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
 
 
 def pymupdf_page_input(page: pymupdf.Page, *, with_tables: bool = True) -> PageInput:
@@ -169,7 +173,7 @@ def pymupdf_page_input(page: pymupdf.Page, *, with_tables: bool = True) -> PageI
         width=width,
         height=height,
         rotation=page.rotation,
-        frame=frame,
+        frame=(frame - page.rotation) % 360,  # from the page as displayed
         label=page.get_label() or None,
         blocks=blocks,
         grids=pymupdf_grids(page, blocks, frame) if with_tables else [],
@@ -242,6 +246,13 @@ def _pdfium_chars(page: pypdfium2.PdfPage) -> list[_Char]:
     size and whether it is bold."""
     left, _, _, top = page.get_cropbox()
     textpage = page.get_textpage()
+    try:
+        return _chars_of(textpage, left, top)
+    finally:
+        textpage.close()
+
+
+def _chars_of(textpage: pypdfium2.PdfTextPage, left: float, top: float) -> list[_Char]:
     chars: list[_Char] = []
     for i in range(textpage.count_chars()):
         ch = _pdfium_char(textpage, i)
@@ -253,7 +264,6 @@ def _pdfium_chars(page: pypdfium2.PdfPage) -> list[_Char]:
             chars.append(_Char(ch, rect, angle, size, _pdfium_bold(textpage, i)))
         else:
             chars.append(_Char(ch, (0.0, 0.0, 0.0, 0.0), 0.0, 0.0, False))
-    textpage.close()
     return chars
 
 
@@ -347,7 +357,7 @@ def pdfium_page_input(page: pypdfium2.PdfPage, number: int) -> PageInput:
         width=width,
         height=height,
         rotation=page.get_rotation(),
-        frame=frame,
+        frame=(frame - page.get_rotation()) % 360,  # from the page as displayed
         blocks=blocks,
     )
 
@@ -369,8 +379,10 @@ class PdfiumParser:
             inputs = []
             for index in range(len(doc)):
                 page = doc[index]
-                inputs.append(pdfium_page_input(page, index + 1))
-                page.close()
+                try:
+                    inputs.append(pdfium_page_input(page, index + 1))
+                finally:
+                    page.close()
         finally:
             doc.close()
         return assemble(inputs)

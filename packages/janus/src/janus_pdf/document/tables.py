@@ -7,10 +7,18 @@ table from its "Table N" caption and the full-width rules below it, then builds 
 words themselves:
 
 - rows are printed lines;
-- columns are the x-ranges that most rows leave empty;
-- a header phrase that crosses a column gap spans those columns, and a rule printed under a header
-  cell extends it over the empty columns it covers ("Site A (n = 120)" over three habitats);
-- an empty header cell under a header cell merges into it ("Parameter" over two header rows).
+- columns are the x-ranges that most rows leave empty, and each boundary sits in the part of its
+  range that the fewest words reach into, so a long row label stays in its column;
+- in the body every word belongs to the column under its centre, so no body cell crosses a
+  boundary;
+- a header phrase that crosses a column gap spans those columns, up to the column where the next
+  phrase of its row starts, and a rule printed under a header cell extends it over the empty
+  columns it covers ("Site A (n = 120)" over three habitats);
+- an empty header cell under a header cell merges into it ("Parameter" over two header rows);
+- a leading row whose one cell spans every column is a title, not a header.
+
+Fully ruled tables come from `find_tables`, and `grid_from_ruling` takes their cells from the
+rules themselves.
 
 Docling's TableFormer grids go through `grid_from_cells`, so both paths give cell rectangles that
 tile the table and receive the text layer's words.
@@ -21,8 +29,10 @@ from dataclasses import dataclass
 from statistics import median
 
 from janus_pdf.document.layout import Grid, GridCell, PBlock, PWord, Rect, group_rows, union
+from janus_pdf.document.model import CellRole
 
-TABLES_VERSION = "kittum.documents.tables.v1"
+# v2: ruled tables take their cells from the rules, body words never cross a column, title rows.
+TABLES_VERSION = "janus.tables.v2"
 
 _CAPTION = re.compile(r"^Table\s+\d+[A-Za-z]?\b")
 _RULE_TOLERANCE = 12.0  # points by which a table's rules may differ in extent
@@ -122,12 +132,39 @@ def _columns(
             while j < n and cover[j] <= threshold:
                 j += 1
             if (j - k) * step >= 3.0 and k > 0 and j < n:
-                bounds.append(lo + (k + j) / 2 * step)
+                bounds.append(lo + _clearest(cover[k:j], k) * step)
             k = j
         else:
             k += 1
     bounds.append(hi)
     return bounds
+
+
+def _title_rows(first_spans: list[tuple[int, int]], ncols: int, nrows: int) -> int:
+    """Leading rows whose only cell spans every column, while a header and a body row remain."""
+    titles = 0
+    while titles < min(len(first_spans), nrows - 2) and first_spans[titles] == (0, ncols - 1):
+        titles += 1
+    return titles
+
+
+def _clearest(cover: list[int], offset: int) -> float:
+    """The middle of the longest stretch of the gap that the fewest rows cover, so a boundary
+    falls between the words of the rows that reach into the gap, not through them."""
+    least = min(cover)
+    best = (0, 0)
+    k = 0
+    while k < len(cover):
+        if cover[k] == least:
+            j = k
+            while j < len(cover) and cover[j] == least:
+                j += 1
+            if j - k > best[1] - best[0]:
+                best = (k, j)
+            k = j
+        else:
+            k += 1
+    return offset + (best[0] + best[1]) / 2
 
 
 def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid | None:
@@ -153,38 +190,57 @@ def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid |
                 return c
         return ncols - 1
 
-    # Each phrase covers the columns it overlaps; overlapping coverage merges into one cell.
-    spans_by_row: list[list[tuple[int, int, list[PWord]]]] = []
-    for phrases in phrase_rows:
+    def header_spans(
+        phrases: list[tuple[float, float, list[PWord]]],
+    ) -> list[tuple[int, int, list[PWord]]]:
+        """A header phrase covers the columns it crosses, up to the column where the next phrase
+        of its row starts; phrases that start in one column are one cell."""
+        starts = [col_of(x0 + 0.5) for x0, _, _ in phrases]
         spans: list[tuple[int, int, list[PWord]]] = []
-        for x0, x1, ws in phrases:
-            c0, c1 = col_of(x0 + 0.5), col_of(x1 - 0.5)
+        for i, (_, x1, ws) in enumerate(phrases):
+            c0, c1 = starts[i], col_of(x1 - 0.5)
+            following = starts[i + 1] if i + 1 < len(phrases) else ncols
+            if following > c0:
+                c1 = min(c1, following - 1)
             if spans and c0 <= spans[-1][1]:
-                a, _, prev = spans[-1]
-                spans[-1] = (a, max(c1, spans[-1][1]), [*prev, *ws])
+                a, b, prev = spans[-1]
+                spans[-1] = (a, max(b, c1), [*prev, *ws])
             else:
                 spans.append((c0, c1, list(ws)))
-        spans_by_row.append(spans)
+        return spans
 
-    header_rows = 1
+    def body_spans(line: list[PWord]) -> list[tuple[int, int, list[PWord]]]:
+        """In the body every word belongs to the column under its centre."""
+        by_col: dict[int, list[PWord]] = {}
+        for w in line:
+            by_col.setdefault(col_of(w.cx), []).append(w)
+        return [(c, c, ws) for c, ws in sorted(by_col.items())]
+
+    heads = [header_spans(phrases) for phrases in phrase_rows]
+    titles = _title_rows(
+        [(h[0][0], h[0][1]) if len(h) == 1 else (-1, -1) for h in heads], ncols, len(lines)
+    )
+    header_end = titles + 1
     while (
-        header_rows < min(_MAX_HEADER_ROWS, len(lines) - 1)
-        and spans_by_row[header_rows]
-        and spans_by_row[header_rows][0][0] > 0
+        header_end < min(titles + _MAX_HEADER_ROWS, len(lines) - 1)
+        and heads[header_end]
+        and heads[header_end][0][0] > 0
     ):
-        header_rows += 1
+        header_end += 1
+    spans_by_row = [
+        heads[r] if r < header_end else body_spans(line) for r, line in enumerate(lines)
+    ]
 
     # Content extent per column, from body rows only.
     extent: list[tuple[float, float] | None] = [None] * ncols
-    for spans in spans_by_row[header_rows:]:
-        for c0, c1, ws in spans:
-            if c0 == c1:
-                r = union(w.rect for w in ws)
-                e = extent[c0]
-                extent[c0] = (r[0], r[2]) if e is None else (min(e[0], r[0]), max(e[1], r[2]))
+    for spans in spans_by_row[header_end:]:
+        for c0, _, ws in spans:
+            r = union(w.rect for w in ws)
+            e = extent[c0]
+            extent[c0] = (r[0], r[2]) if e is None else (min(e[0], r[0]), max(e[1], r[2]))
 
     # Extend header cells over the empty columns covered by the rule printed under them.
-    for r in range(header_rows):
+    for r in range(titles, header_end):
         spans = spans_by_row[r]
         bottom = row_bottoms[r]
         # A rule across the whole table separates header from body; it spans nothing.
@@ -212,6 +268,7 @@ def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid |
     covered: set[tuple[int, int]] = set()
     by_origin: dict[tuple[int, int], GridCell] = {}
     for r, spans in enumerate(spans_by_row):
+        role: CellRole = "title" if r < titles else "header" if r < header_end else "body"
         filled = {c: (c0, c1, ws) for c0, c1, ws in spans for c in range(c0, c1 + 1)}
         c = 0
         while c < ncols:
@@ -225,7 +282,7 @@ def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid |
                 )
                 c = c1 + 1
             else:
-                above = by_origin.get((r - 1, c)) if 0 < r < header_rows else None
+                above = by_origin.get((r - 1, c)) if titles < r < header_end else None
                 if above is not None and above.words and above.col_span == 1:
                     above.row_span += 1
                     covered.add((r, c))
@@ -233,7 +290,7 @@ def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid |
                     continue
                 cell = GridCell(row=r, col=c, rect=(0, 0, 0, 0))
                 c += 1
-            cell.header = r < header_rows
+            cell.role = role
             by_origin[(r, cell.col)] = cell
             cells.append(cell)
     for cell in cells:
@@ -247,6 +304,71 @@ def grid_from_words(rect: Rect, words: list[PWord], rules: list[Rule]) -> Grid |
     return Grid(
         rect=(rect[0], rect[1], rect[2], ybounds[-1]), rows=len(lines), cols=ncols, cells=cells
     )
+
+
+def _edges(values: list[float]) -> list[float]:
+    """Distinct rule positions, with positions closer than a point taken as one."""
+    out: list[float] = []
+    for v in sorted(values):
+        if not out or v - out[-1] > 1.0:
+            out.append(v)
+    return out
+
+
+def _nearest(edges: list[float], v: float) -> int:
+    return min(range(len(edges)), key=lambda i: abs(edges[i] - v))
+
+
+def grid_from_ruling(rows: list[list[Rect | None]]) -> Grid | None:
+    """A ruled table's grid from the cells its rules enclose (`find_tables` rows, with None where
+    a merged cell covers the slot). The rules decide every cell; the words only fill them.
+
+    Leading rows whose one cell spans the whole table are titles. The first row after them is
+    the header, together with the rows its cells span down into.
+    """
+    boxes = [b for row in rows for b in row if b is not None]
+    xs = _edges([v for b in boxes for v in (b[0], b[2])])
+    ys = _edges([v for b in boxes for v in (b[1], b[3])])
+    ncols, nrows = len(xs) - 1, len(ys) - 1
+    if ncols < 2 or nrows < 2:
+        return None
+    cells: list[GridCell] = []
+    taken: set[tuple[int, int]] = set()
+    for b in sorted(boxes, key=lambda b: (b[1], b[0])):
+        c0, c1 = _nearest(xs, b[0]), _nearest(xs, b[2])
+        r0, r1 = _nearest(ys, b[1]), _nearest(ys, b[3])
+        if c1 <= c0 or r1 <= r0 or (r0, c0) in taken:
+            continue
+        taken.update((r, c) for r in range(r0, r1) for c in range(c0, c1))
+        cells.append(
+            GridCell(
+                row=r0,
+                col=c0,
+                rect=(xs[c0], ys[r0], xs[c1], ys[r1]),
+                row_span=r1 - r0,
+                col_span=c1 - c0,
+            )
+        )
+    for r in range(nrows):
+        for c in range(ncols):
+            if (r, c) not in taken:
+                cells.append(GridCell(row=r, col=c, rect=(xs[c], ys[r], xs[c + 1], ys[r + 1])))
+    origin = {(c.row, c.col): c for c in cells}
+    titles = _title_rows(
+        [
+            (0, cell.col_span - 1)
+            if (cell := origin.get((r, 0))) and cell.row_span == 1
+            else (-1, -1)
+            for r in range(nrows)
+        ],
+        ncols,
+        nrows,
+    )
+    header_end = titles + max(c.row_span for c in cells if c.row == titles)
+    header_end = min(header_end, nrows - 1)
+    for cell in cells:
+        cell.role = "title" if cell.row < titles else "header" if cell.row < header_end else "body"
+    return Grid(rect=(xs[0], ys[0], xs[-1], ys[-1]), rows=nrows, cols=ncols, cells=cells)
 
 
 def _boundaries(
@@ -279,14 +401,14 @@ def _boundaries(
 
 @dataclass(frozen=True, slots=True)
 class CellSpec:
-    """A detector's cell: grid position, spans, a text box, and whether it is a column header."""
+    """A detector's cell: grid position, spans, a text box, and its role in the table."""
 
     row: int
     col: int
     row_span: int
     col_span: int
     rect: Rect
-    header: bool
+    role: CellRole
 
 
 def grid_from_cells(rect: Rect, rows: int, cols: int, specs: list[CellSpec]) -> Grid:
@@ -330,7 +452,7 @@ def grid_from_cells(rect: Rect, rows: int, cols: int, specs: list[CellSpec]) -> 
                 rect=(xb[s.col], yb[s.row], xb[s.col + cs], yb[s.row + rs]),
                 row_span=rs,
                 col_span=cs,
-                header=s.header,
+                role=s.role,
             )
         )
     for r in range(rows):

@@ -247,4 +247,4 @@ def extract(layer: Layer, spec: Spec, proposer: Proposer | None = None) -> Extra
             if proposal is not None:
                 r = _confirm(ix, f, proposal, proposer.name, r)
         results.append(r)
-    return Extraction(spec.hash, layer.document_hash, layer.output_hash, tuple(results))
+    return Extraction(spec.hash, layer.document_hash, layer.id, tuple(results))
