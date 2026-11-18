@@ -112,6 +112,7 @@ def text_layer(text: str, *, name: str = "text", pdf: bytes = b"%PDF-1.7 fake") 
 
 
 LEDGER = FIXTURES / "stock-ledger.pdf"  # a ruled table over three pages
+PACKING = FIXTURES / "packing-list.pdf"  # the header Item / Qty printed again, five ways
 
 Item = (
     tuple[float, float, str]

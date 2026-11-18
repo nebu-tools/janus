@@ -7,6 +7,7 @@ one span when the words follow one another, several when other words are printed
 through a `View`, so a field's pages apply to all of them alike.
 """
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
 from janus_pdf._index import View, normalize_label, rank
@@ -44,10 +45,10 @@ class Rows:
     """A records locator's result: the header it matched and the rows under it.
 
     `notes` says what was left out of the rows and where the table ended. `incomplete` says why
-    the rows may not be all of them, or may hold another table's rows (the header printed again
-    on a page the table does not reach, a line set like the header, a title over a continued
-    table); `ambiguous` says which printed line no declaration gives to a record. Either one
-    means the rows are not a value.
+    the rows may not be all of them, or may hold another table's rows (rows on the table's column
+    edges opening a page it does not reach, a line set like the header, a title over a continued
+    table); `ambiguous` names the header printed again where no key says what it is, or the
+    printed line no declaration gives to a record. Either one means the rows are not a value.
     """
 
     method: str  # "records" for a table, "records:layout" for printed rows without rules
@@ -75,9 +76,13 @@ def locate(view: View, f: Field) -> Found:
 
 
 def locate_records(view: View, loc: Records) -> Rows | None:
-    """The rows under the first table row, or printed row, that holds every header."""
-    reader = _table_records(view, loc) or _line_records(view, loc)
-    return None if reader is None else _follow(view, loc, reader)
+    """The rows under the header printed first in reading order, in a ruled table or in a
+    printed row, and what every other place the header is printed means for them."""
+    matches = sorted([*_table_matches(view, loc), *_line_matches(view, loc)], key=lambda m: m.start)
+    if not matches:
+        return None
+    first, *others = matches
+    return _follow(view, loc, first.reader(), others)
 
 
 def _strip(view: View, start: int, end: int) -> Span | None:
@@ -383,15 +388,18 @@ def _region(view: View, loc: Region) -> Found:
 
 # --- records: what the kinds of table share -----------------------------------------------------
 #
-# A table's rows become printed lines (`_Line`). Both kinds of table are read by a `_Reader` and
-# go through the same steps in `_follow`: a `stop:` row ends the table, `skip:` rows and the
-# header printed again are left out, a line that does not fit the columns ends a table without
-# rules, and the table goes on to the next page only in the form `continues:` declares. The
+# Every place the declared header is printed, in a ruled table or in a printed row, is a match
+# (`_Match`), and the first in reading order is the table that is read, whatever its kind. Its
+# rows become printed lines (`_Line`). Both kinds of table are read by a `_Reader` and go through
+# the same steps in `_follow`: a `stop:` row ends the table, `skip:` rows are left out, another
+# match ends it, a line that does not fit the columns ends a table without rules, and the table
+# goes on to the next page only in the form `continues:` declares. A match that no declaration
+# covers leaves the field ambiguous: the page does not say whether it begins another table. The
 # words of a row are compared only with the spec's own labels and headers; vertical spacing
 # decides nothing.
 
 _ALIGNED = 1.5  # points: edges this close are the same edge
-_AGAIN = "the header, or rows on the same column edges, is printed again on"
+_ONE_PAGE = "rows on the table's column edges open"
 
 _Edges = dict[str, list[tuple[float, float]]]  # each column's extents seen so far
 _Style = tuple[float | None, bool]  # font size and weight
@@ -416,6 +424,18 @@ class _Opening:
     header: bool
     above: list[tuple[str, str]]  # (first text, whole text) of each line above the table
     edges: _Edges = field(default_factory=dict)  # the repeated header's column extents
+    head: frozenset[int] = frozenset()  # the repeated header's words, by start offset
+
+
+@dataclass(frozen=True, slots=True)
+class _Match:
+    """One place the declared header is printed: a ruled table's row or a printed row."""
+
+    start: int  # where it begins in reading order
+    page: int
+    words: frozenset[int]  # its words, by start offset
+    ruled: bool
+    reader: Callable[[], "_Reader"]  # the reader of the table it heads
 
 
 @dataclass(slots=True)
@@ -425,6 +445,7 @@ class _Cut:
     lines: list[_Line]
     stopped: bool = False  # a `stop:` row
     misfit: _Line | None = None  # a line that does not fit the columns
+    repeat: _Line | None = None  # the header printed again
 
 
 def _on(pages: list[int]) -> str:
@@ -505,7 +526,6 @@ class _Reader:
     page: int  # the page the header is printed on
     header: Span
     header_words: list[Word]
-    header_text: str  # normalized, to recognise the header printed again
 
     def __init__(self, view: View, loc: Records) -> None:
         self.view, self.loc = view, loc
@@ -536,57 +556,71 @@ class _Reader:
         return []
 
 
-def _cut(reader: _Reader, lines: list[_Line], skipped: list, again: list[int]) -> _Cut:
-    """`lines` up to a `stop:` row or a line that does not fit the columns, without the rows
-    `skip:` names (added to `skipped`) and the header printed again (its page added to
-    `again`)."""
+def _cut(
+    reader: _Reader, lines: list[_Line], skipped: list, taken: set[int], marks: frozenset[int]
+) -> _Cut:
+    """`lines` up to a `stop:` row, another match of the header (a line holding a word of
+    `marks`) or a line that does not fit the columns, without the rows `skip:` names (added to
+    `skipped`). The words of the rows `stop:` and `skip:` take are added to `taken`: a match
+    among them is declared."""
     loc = reader.loc
     out: list[_Line] = []
     for line in lines:
+        words = {w.start for w in line.words}
         if _starts(line.first, loc.stop):
+            taken |= words
             return _Cut(out, stopped=True)
         if _starts(line.first, loc.skip):
             skipped.append((clean(line.text), line.page))
+            taken |= words
             continue
-        if normalize_label(line.text) == reader.header_text:
-            again.append(line.page)
-            continue
+        if words & marks:
+            return _Cut(out, repeat=line)
         if not reader.fit(line):
             return _Cut(out, misfit=line)
         out.append(line)
     return _Cut(out)
 
 
-def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
+def _follow(view: View, loc: Records, reader: _Reader, others: list[_Match]) -> Rows:
     """The rows of the table `reader` found, on its page and, in the form `continues:`
-    declares, on each following page that continues it."""
+    declares, on each following page that continues it, up to the next of `others` (the other
+    places the header is printed)."""
     keys = [k for k, _ in loc.header]
     form = loc.continues
+    flowing = form in ("header", "rows")
     first = reader.page
     later = [n for n in view.numbers if n > first]
+    marks = frozenset(w for m in others for w in m.words)
 
     def continuing(n: int) -> _Opening | None:
         o = reader.open(n)
         return o if o is not None and (form == "rows" or o.header) else None
 
     skipped: list[tuple[str, int]] = []
+    taken: set[int] = set()  # words of the rows `stop:` and `skip:` take
     again: list[int] = []
     flows = False
-    if form:
-        cut = _cut(reader, reader.lines(True), skipped, again)
+    if flowing:
+        cut = _cut(reader, reader.lines(True), skipped, taken, marks)
         flows = (
             not cut.stopped
             and cut.misfit is None
+            and cut.repeat is None
             and first + 1 in later
             and continuing(first + 1) is not None
         )
     if not flows:
-        skipped, again = [], []
-        cut = _cut(reader, reader.lines(False), skipped, again)
+        skipped, taken = [], set()
+        cut = _cut(reader, reader.lines(False), skipped, taken, marks)
     lines = list(cut.lines)
     pages = [first]
     incomplete = ""
-    while flows and not cut.stopped and cut.misfit is None and pages[-1] + 1 in later:
+
+    def ended() -> bool:
+        return cut.stopped or cut.misfit is not None or cut.repeat is not None
+
+    while flows and not ended() and pages[-1] + 1 in later:
         n = pages[-1] + 1
         o = continuing(n)
         if o is None:
@@ -604,8 +638,9 @@ def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
         skipped += [(clean(t), n) for _, t in o.above]
         if o.header:
             again.append(n)
+            taken |= o.head
         reader.extend(o.edges)
-        cut = _cut(reader, o.lines, skipped, again)
+        cut = _cut(reader, o.lines, skipped, taken, marks)
         lines += cut.lines
         pages.append(n)
     last = pages[-1]
@@ -621,16 +656,20 @@ def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
                 "table's pages with `pages:`"
             )
 
-    def reprinted(n: int) -> bool:
-        o = reader.open(n)
-        return o is not None and (o.header or (form != "header" and not o.above))
+    open_ = [m for m in others if form != "none" and not m.words & taken]
+    ambiguous = "" if incomplete or not open_ else _another(open_[0], reader, cut, first, last)
 
-    elsewhere = [] if incomplete else [n for n in later if n > last and reprinted(n)]
+    def opens_with_rows(n: int) -> bool:
+        o = reader.open(n)
+        return o is not None and not o.header and not o.above
+
+    elsewhere = []
+    if not incomplete and not ambiguous and form in (None, "rows"):
+        elsewhere = [n for n in later if n > last and opens_with_rows(n)]
     if elsewhere and not form:
         incomplete = (
-            f"{_AGAIN} {_on(elsewhere)}; if the table runs over pages, declare how with "
-            "`continues: header` (each page opens with the header) or `continues: rows` (each "
-            f"page opens with rows on the same column edges); if it does not, keep the field to "
+            f"{_ONE_PAGE} {_on(elsewhere)}; if the table runs over pages, declare it with "
+            f"`continues: rows`; if it does not, say `continues: none`, or keep the field to "
             f"page {first} with `pages: {first}`"
         )
     elif elsewhere:
@@ -638,13 +677,13 @@ def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
             how = "at a `stop:` row"
         elif cut.misfit is not None:
             how = f"at the line {clean(cut.misfit.text)!r}, which does not fit its columns"
-        elif form == "header":
-            how = f"because page {last + 1} does not open with its header"
+        elif cut.repeat is not None:
+            how = f"at the header printed again on page {cut.repeat.page}"
         else:
             how = f"because page {last + 1} does not continue it"
         incomplete = (
-            f"the table ends on page {last} {how}, but {_AGAIN} {_on(elsewhere)}; keep the field "
-            f"to the table's pages with `pages: {_range(first, last)}`"
+            f"the table ends on page {last} {how}, but {_ONE_PAGE} {_on(elsewhere)}; keep the "
+            f"field to the table's pages with `pages: {_range(first, last)}`"
         )
 
     notes: list[str] = []
@@ -668,17 +707,21 @@ def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
             f"the table ends at the line {clean(line.text)!r} on page {line.page}, which does "
             "not fit its columns"
         )
+    if form == "none" and others:
+        notes.append(
+            f"`continues: none`: the header printed again on {_on(sorted({m.page for m in others}))} "
+            "heads another table, left out"
+        )
     if (
-        form
-        and not cut.stopped
-        and cut.misfit is None
+        flowing
+        and not ended()
         and view.pages is not None
         and last == view.pages[1]
         and view.layer.pages
         and last < view.layer.pages[-1].number
     ):
         notes.append(f"the table may go on after page {last}, outside the field's pages")
-    groups, ambiguous = reader.group(lines)
+    groups, unplaced = reader.group(lines)
     return Rows(
         reader.method,
         reader.header,
@@ -686,25 +729,73 @@ def _follow(view: View, loc: Records, reader: _Reader) -> Rows:
         tuple(pages),
         tuple(notes),
         incomplete,
-        ambiguous,
+        ambiguous or unplaced,
     )
+
+
+def _another(m: _Match, reader: _Reader, cut: _Cut, first: int, last: int) -> str:
+    """Why the header printed again at `m` leaves the rows ambiguous, and the keys that settle
+    it either way."""
+    flowing = reader.loc.continues in ("header", "rows")
+    line = cut.repeat
+    within = line is not None and bool({w.start for w in line.words} & m.words)
+    where = "" if within or m.page > last else " outside the table read"
+    said = (
+        f"the header is printed again on page {m.page}{where}, and the page does not say "
+        "whether it goes on with the same table or heads another"
+    )
+    apart = (
+        "no key reads a ruled table and a table without rules as one, or two tables printed "
+        "apart, so if the field is both, declare a field for each"
+    )
+    if within and line is not None:
+        label = clean(line.first)
+        only = f"`stop: [{label}]`" if flowing else "`continues: none`"
+        one = (
+            f"if they are one table, leave the header printed again out with `skip: [{label}]`"
+            if m.ruled == isinstance(reader, _Ruled)
+            else apart
+        )
+        return f"{said}; if the field is only the table before it, say {only}; {one}"
+    if m.page > last:
+        if flowing:
+            return (
+                f"{said}, after the table ends on page {last}; if the field is only the table "
+                f"before it, keep the field to its pages with `pages: {_range(first, last)}`"
+            )
+        return (
+            f"{said}; if the field is only the table before it, say `continues: none` or keep "
+            f"the field to page {first} with `pages: {first}`; if they are one table running "
+            "over pages, declare it with `continues: header` (each page opens with the header) "
+            "or `continues: rows` (each page opens with rows on the same column edges)"
+        )
+    only = (
+        f"keep the field to the pages before it with `pages: {_range(first, m.page - 1)}`"
+        if flowing and m.page > first
+        else "say `continues: none`"
+    )
+    return f"{said}; if the field is only the table before it, {only}; {apart}"
 
 
 # --- records in tables --------------------------------------------------------------------------
 
 
-def _header_row(
-    view: View, table: Table, wanted: list[tuple[str, str]]
-) -> tuple[int, dict[str, int], list[TableCell]] | None:
-    """The first row of `table` that holds every wanted header: its number, each key's column,
-    and its printed cells left to right."""
+_HeaderRow = tuple[int, dict[str, int], list[TableCell]]
+
+
+def _header_rows(view: View, table: Table, wanted: list[tuple[str, str]]) -> Iterator[_HeaderRow]:
+    """Each row of `table` that holds every wanted header: its number, each key's column, and
+    its printed cells left to right."""
     cells = view.by_table[table.id]
     for r in range(table.rows):
         row = {normalize_label(view.text(c.start, c.end)): c for c in cells if c.row == r}
         if all(h in row for _, h in wanted):
             printed = sorted((c for c in row.values() if c.end > c.start), key=lambda c: c.col)
-            return r, {k: row[h].col for k, h in wanted}, printed
-    return None
+            yield r, {k: row[h].col for k, h in wanted}, printed
+
+
+def _header_row(view: View, table: Table, wanted: list[tuple[str, str]]) -> _HeaderRow | None:
+    return next(_header_rows(view, table, wanted), None)
 
 
 def _printed_row(view: View, table: Table, r: int) -> list[TableCell]:
@@ -755,7 +846,6 @@ class _Ruled(_Reader):
         self.page = table.page
         self.header = Span(min(c.start for c in printed), max(c.end for c in printed))
         self.header_words = [w for c in printed for w in view.words_between(c.start, c.end)]
-        self.header_text = normalize_label(" ".join(view.text(c.start, c.end) for c in printed))
         self.wanted = [(k, normalize_label(h)) for k, h in loc.header]
 
     def lines(self, drop: bool) -> list[_Line]:  # noqa: ARG002 - nothing in a cell is furniture
@@ -769,6 +859,9 @@ class _Ruled(_Reader):
         for t in (t for t in view.tables if t.page == page):
             if found := _header_row(view, t, self.wanted):
                 head, start, cols, header = found[0], found[0] + 1, found[1], True
+                words = frozenset(
+                    w.start for c in found[2] for w in view.words_between(c.start, c.end)
+                )
             else:
                 a, b = _edges(view, self.table), _edges(view, t)
                 if len(a) != len(b) or not all(
@@ -777,6 +870,7 @@ class _Ruled(_Reader):
                     continue
                 titles = {c.row for c in view.by_table[t.id] if c.role == "title"}
                 head, start, cols, header = len(titles), len(titles), self.cols, False
+                words = frozenset()
             top = _top(view, t.box)
             above = [
                 (text, text)
@@ -787,16 +881,23 @@ class _Ruled(_Reader):
             for r in range(head):
                 if texts := [view.text(c.start, c.end) for c in _printed_row(view, t, r)]:
                     above.append((texts[0], " ".join(texts)))
-            return _Opening(_table_lines(view, t, start, cols), header, above)
+            return _Opening(_table_lines(view, t, start, cols), header, above, head=words)
         return None
 
 
-def _table_records(view: View, loc: Records) -> _Reader | None:
+def _table_matches(view: View, loc: Records) -> Iterator[_Match]:
+    """Each row of a ruled table that holds every header."""
     wanted = [(k, normalize_label(h)) for k, h in loc.header]
     for table in view.tables:
-        if found := _header_row(view, table, wanted):
-            return _Ruled(view, loc, table, found)
-    return None
+        for found in _header_rows(view, table, wanted):
+            words = [w for c in found[2] for w in view.words_between(c.start, c.end)]
+            yield _Match(
+                min(c.start for c in found[2]),
+                table.page,
+                frozenset(w.start for w in words),
+                True,
+                lambda table=table, found=found: _Ruled(view, loc, table, found),
+            )
 
 
 # --- records printed without a table ------------------------------------------------------------
@@ -951,7 +1052,6 @@ class _Layout(_Reader):
         self.heads, self.page, self.cols = heads, page, cols
         self.header = Span(min(w.start for w, _ in row), max(w.end for w, _ in row))
         self.header_words = [w for w, _ in row]
-        self.header_text = normalize_label(" ".join(view.text(w.start, w.end) for w, _ in row))
         self.top = min(b[1] for _, b in row)
         self.edges: _Edges = {k: [e] for k, e in cols.extents.items()}
 
@@ -993,7 +1093,8 @@ class _Layout(_Reader):
             ]
             if any(w.start in starts for w, _ in r) and (cols := _columns(view, r, loc)):
                 edges = {k: [e] for k, e in cols.extents.items()}
-                return _Opening(_layout_lines(view, rows, cols, page), True, above, edges)
+                head = frozenset(w.start for w, _ in r)
+                return _Opening(_layout_lines(view, rows, cols, page), True, above, edges, head)
             line = _layout_line(view, r, self.cols, page)
             if len(line.cells) >= 2 and _fits(line, self.edges):
                 cols = replace(self.cols, top=r[0][1][1])
@@ -1051,28 +1152,25 @@ class _Layout(_Reader):
         return groups, ""
 
 
-def _header(
-    view: View, loc: Records, rows: list[_Printed], starts: list[int]
-) -> tuple[_Printed, _Columns] | None:
-    """The printed row holding every header, among the rows that hold one of `starts` (where
-    the first header is printed), and its columns."""
-    for start in starts:
-        row = next((r for r in rows if any(w.start == start for w, _ in r)), None)
-        if row is not None and (cols := _columns(view, row, loc)) is not None:
-            return row, cols
-    return None
-
-
-def _line_records(view: View, loc: Records) -> _Reader | None:
-    """Records laid out without rules: the header is a printed row holding every column header,
-    each column spans its header's width, and rows run while they fit the columns, until a
-    `stop:` row or the end of the page."""
+def _line_matches(view: View, loc: Records) -> Iterator[_Match]:
+    """Each printed row, outside ruled tables, that holds every header: the rows where the first
+    header is printed whose words set a column for each."""
     heads: dict[int, list[int]] = {}
     for span in view.find_label(loc.header[0][1]):
         if not view.cell_at(span.start):
             heads.setdefault(view.page_of(span.start), []).append(span.start)
     for page, starts in heads.items():
-        found = _header(view, loc, _page_rows(view, page, loc, None), starts)
-        if found is not None:
-            return _Layout(view, loc, heads, page, *found)
-    return None
+        rows = _page_rows(view, page, loc, None)
+        seen: set[int] = set()
+        for start in starts:
+            row = next((r for r in rows if any(w.start == start for w, _ in r)), None)
+            if row is None or id(row) in seen or (cols := _columns(view, row, loc)) is None:
+                continue
+            seen.add(id(row))
+            yield _Match(
+                min(w.start for w, _ in row),
+                page,
+                frozenset(w.start for w, _ in row),
+                False,
+                lambda page=page, row=row, cols=cols: _Layout(view, loc, heads, page, row, cols),
+            )

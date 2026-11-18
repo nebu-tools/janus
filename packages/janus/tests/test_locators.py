@@ -224,9 +224,11 @@ def test_cell_numbers_count_tables_on_the_fields_pages():
 # --- records across page breaks -----------------------------------------------------------------
 #
 # A table is on one page unless the spec says `continues:`. Without it, another page of the
-# field that prints the header again, or opens with rows on the same column edges, makes the
-# field incomplete; with `continues: header` the table runs on over each following page that
-# opens with its header, and with `continues: rows` over each that opens with rows on its edges.
+# field that prints the header again makes the field ambiguous, and one that opens with rows on
+# the same column edges makes it incomplete; with `continues: header` the table runs on over each
+# following page that opens with its header, with `continues: rows` over each that opens with
+# rows on its edges, and with `continues: none` it stays on its page and the header printed again
+# heads another table.
 
 LEDGER_SPEC = {"records": {"header": {"item": "Item", "qty": "Qty"}, "stop": ["Total"],
                            "skip": ["Carried forward", "Brought forward"], "continues": "rows"},
@@ -266,13 +268,15 @@ def test_header_form_ends_where_a_page_does_not_open_with_the_header(ledger):
     assert ex.result("x").message.startswith("80 rows under the header on pages 1, 2")
 
 
-def test_an_undeclared_table_printed_again_is_incomplete(ledger):
+def test_an_undeclared_table_printed_again_is_ambiguous(ledger):
     records = {k: v for k, v in LEDGER_SPEC["records"].items() if k != "continues"}
     head = one(ledger, {**LEDGER_SPEC, "records": records})
-    assert head.status == "incomplete" and head.value is None
-    assert "printed again on pages 2, 3" in head.message
+    assert head.status == "ambiguous" and head.value is None
+    assert "printed again on page 2" in head.message
     assert "`continues: header`" in head.message and "`continues: rows`" in head.message
-    assert "`pages: 1`" in head.message
+    assert "`continues: none`" in head.message and "`pages: 1`" in head.message
+    ex = run(ledger, {**LEDGER_SPEC, "records": {**records, "continues": "none"}})
+    assert len(ex.data["x"]) == 40  # page 3 opens with rows, not the header: no question
 
 
 def test_a_table_cut_off_by_the_fields_pages_says_it_may_go_on(ledger):
@@ -293,11 +297,12 @@ def _form(n: int, statement: bool) -> list:
 def test_two_one_page_forms_are_not_one_table(statement):
     layer = drawn(_form(1, statement), _form(2, statement))
     head = one(layer, RECORDS)
-    assert head.status == "incomplete" and head.value is None
+    assert head.status == "ambiguous" and head.value is None
     assert "printed again on page 2" in head.message
     assert "`continues: header`" in head.message and "`pages: 1`" in head.message
-    ex = run(layer, {**RECORDS, "pages": 1})
-    assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
+    for first in ({**RECORDS, "pages": 1}, continued("none")):
+        ex = run(layer, first)
+        assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
     for form in ("header", "rows"):
         ex = run(layer, continued(form))
         assert [r["description"] for r in ex.data["x"]] == ["Widget", "Gadget"]
@@ -305,15 +310,15 @@ def test_two_one_page_forms_are_not_one_table(statement):
         assert ("'Statement 2' on page 2" in ex.result("x").message) == statement
 
 
-def test_a_table_printed_again_after_a_blank_page_is_incomplete():
+def test_a_table_printed_again_after_a_blank_page_is_ambiguous():
     table = _form(1, False)
     layer = drawn(table, [], table)
     head = one(layer, RECORDS)
-    assert head.status == "incomplete" and "printed again on page 3" in head.message
+    assert head.status == "ambiguous" and "printed again on page 3" in head.message
     head = one(layer, continued("rows"))
-    assert head.status == "incomplete"
-    assert "ends on page 1 because page 2 does not continue it" in head.message
-    assert "printed again on page 3" in head.message and "`pages: 1`" in head.message
+    assert head.status == "ambiguous"
+    assert "printed again on page 3, and the page" in head.message
+    assert "after the table ends on page 1" in head.message and "`pages: 1`" in head.message
     ex = run(layer, {**RECORDS, "pages": 1})
     assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
 
@@ -333,7 +338,12 @@ def test_declared_borderless_rows_run_on_under_the_same_columns():
         [(50, 50, "Gadget"), (300, 50, "2"), (50, 64, "Sprocket"), (300, 64, "3")],
     )
     head = one(drawn(*pages), RECORDS)
-    assert head.status == "incomplete" and "printed again on page 2" in head.message
+    assert head.status == "incomplete" and "rows on the table's column edges open page 2" in (
+        head.message
+    )
+    assert "`continues: rows`" in head.message and "`continues: none`" in head.message
+    ex = run(drawn(*pages), continued("none"))
+    assert [r["description"] for r in ex.data["x"]] == ["Widget"]
     ex = run(drawn(*pages), continued("rows"))
     assert [r["description"] for r in ex.data["x"]] == ["Widget", "Gadget", "Sprocket"]
     ex = run(drawn(*pages), continued("header"))  # page 2 does not open with the header
@@ -350,7 +360,7 @@ def _ledger_page(n: int) -> list:
 def test_running_heads_and_feet_are_left_out_of_a_declared_table_and_reported():
     layer = drawn(*(_ledger_page(n) for n in (1, 2, 3)))
     head = one(layer, RECORDS)
-    assert head.status == "incomplete" and "printed again on pages 2, 3" in head.message
+    assert head.status == "incomplete" and "column edges open pages 2, 3" in head.message
     ex = run(layer, continued("rows"))
     rows = ex.data["x"]
     assert [r["description"] for r in rows] == [f"Item {n}{i}" for n in (1, 2, 3) for i in range(3)]
@@ -496,7 +506,7 @@ def test_a_partial_line_atop_a_continued_page_joins_the_last_record():
     )  # fmt: skip
     body = _filled("first")
     head = one(drawn(*pages), body)
-    assert head.status == "incomplete"
+    assert head.status == "ambiguous" and "printed again on page 2" in head.message
     for form in ("header", "rows"):
         ex = run(drawn(*pages), continued(form, body))
         assert [r["description"] for r in ex.data["x"]] == ["Widget with a bracket", "Gadget"]

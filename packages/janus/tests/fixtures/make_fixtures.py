@@ -590,9 +590,57 @@ def stock_ledger() -> None:
     w.save(HERE / "stock-ledger.pdf", "Juniper Row Stores stock ledger")
 
 
+# --- The packing list ---------------------------------------------------------------------------
+
+
+def _printed(w: Writer, page: pymupdf.Page, y: float, rows: list[tuple[str, str]]) -> float:
+    """Item and Qty printed without rules from baseline `y`, the first row bold."""
+    for i, (item, qty) in enumerate(rows):
+        w.text(page, MARGIN, y, item, bold=i == 0)
+        w.text(page, MARGIN + 240, y, qty, bold=i == 0)
+        y += 18
+    return y
+
+
+def _ruled(w: Writer, page: pymupdf.Page, top: float, rows: list[tuple[str, str]]) -> float:
+    """Item and Qty in a ruled grid from `top`, the first row bold."""
+    x0, x1, row = MARGIN, MARGIN + 340, 20.0
+    for r in range(len(rows) + 1):
+        w.rule(page, x0, x1, top + r * row)
+    for x in (x0, x0 + 230, x1):
+        w.vrule(page, x, top, top + len(rows) * row)
+    for r, (item, qty) in enumerate(rows):
+        w.text(page, x0 + 6, top + r * row + 14, item, bold=r == 0)
+        w.text(page, x0 + 236, top + r * row + 14, qty, bold=r == 0)
+    return top + len(rows) * row
+
+
+def packing_list() -> None:
+    """The header Item / Qty printed again, once on each page: under a printed table by a
+    ruled one (page 1), twice in one printed table (page 2), under a ruled table by a printed
+    one (page 3), and at the top of the next page (pages 4 and 5)."""
+    w = Writer()
+    head = ("Item", "Qty")
+    page = w.page()
+    w.text(page, MARGIN, 60, "Packing list", size=14, bold=True)
+    y = _printed(w, page, 100, [head, ("Apple", "1"), ("Pear", "2")])
+    _ruled(w, page, y + 30, [head, ("Plum", "3")])
+    page = w.page()
+    _printed(w, page, 100, [head, ("Fig", "4"), head, ("Kiwi", "5")])
+    page = w.page()
+    bottom = _ruled(w, page, 90, [head, ("Lime", "6")])
+    _printed(w, page, bottom + 40, [head, ("Date", "7")])
+    page = w.page()
+    _printed(w, page, 100, [head, ("Nut", "8")])
+    page = w.page()
+    _printed(w, page, 100, [head, ("Oat", "9")])
+    w.save(HERE / "packing-list.pdf", "Packing list")
+
+
 if __name__ == "__main__":
     report()
     invoice()
     purchase_order()
     inspection_report()
     stock_ledger()
+    packing_list()
