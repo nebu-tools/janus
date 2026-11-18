@@ -66,7 +66,7 @@ export const api = {
   documents: (signal?: AbortSignal) =>
     call<DocumentRow[]>("/api/documents", signal ? { signal } : {}),
   addDocument: (file: File) =>
-    call<DocumentRow>(`/api/documents?name=${encodeURIComponent(file.name.slice(0, 300))}`, {
+    call<DocumentRow>(`/api/documents?name=${encodeURIComponent(file.name)}`, {
       method: "POST",
       headers: { "content-type": "application/pdf" },
       body: file,

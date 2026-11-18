@@ -37,15 +37,15 @@ test("documents are added, read and removed", async ({ page, request }) => {
   await expect(page.getByRole("group", { name: "Pages" })).toBeVisible();
 });
 
-test("a file that is not a PDF is listed with the reason", async ({ page }) => {
+test("a file that is not a PDF is refused with the reason", async ({ page }) => {
   await page.goto("/");
   await page
     .locator('input[type="file"]')
     .setInputFiles([
       { name: "notes.pdf", mimeType: "application/pdf", buffer: Buffer.from("a shopping list") },
     ]);
-  const row = page.getByRole("row", { name: /notes\.pdf/ });
-  await expect(row).toContainText("Failed");
-  await page.getByRole("button", { name: "Remove notes.pdf" }).click();
-  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText(
+    "the file is not a PDF: it does not start with %PDF-",
+  );
+  await expect(page.getByRole("row", { name: /notes\.pdf/ })).toHaveCount(0);
 });

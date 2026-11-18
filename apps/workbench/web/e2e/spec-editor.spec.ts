@@ -92,3 +92,88 @@ test("a spec is saved under a name and opened again", async ({ page, request }) 
   await expect(page.getByRole("textbox", { name: "Spec, in YAML" })).toContainText("fitting_days");
   await expect(page.getByRole("region", { name: "Results" })).toContainText("fields extracted");
 });
+
+test("old results are never shown as current while a newer edit runs", async ({
+  page,
+  request,
+}) => {
+  const id = await ready(request, "invoice");
+  let held = 0;
+  await page.route("**/extract", async (route) => {
+    if (route.request().postData()?.includes("slow")) {
+      held += 1;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    await route.continue().catch(() => {});
+  });
+  await page.goto(`/d/${id}/spec`);
+  const results = page.getByRole("region", { name: "Results" });
+  const list = results.locator(".fields");
+
+  await write(page, "name: first\nfields:\n  number: { label: Invoice No. }\n");
+  await expect(list).toHaveAttribute("data-stale", "false");
+  await expect(results.locator('.fieldrow[data-path="number"]')).toBeVisible();
+
+  await write(page, "name: slow\nfields:\n  customer: { label: Customer }\n");
+  await expect(list).toHaveAttribute("data-stale", "true");
+  await expect(results).toContainText("These results are for the earlier text.");
+  await expect.poll(() => held).toBe(1);
+
+  // From here on, note every set of fields the list shows as current.
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { seen: string[] }).seen = seen;
+    const note = () => {
+      const fields = document.querySelector(".fields");
+      if (fields && fields.getAttribute("data-stale") !== "true") {
+        const paths = [...fields.querySelectorAll(".fieldrow")].map((r) =>
+          r.getAttribute("data-path"),
+        );
+        seen.push(paths.join(","));
+      }
+    };
+    new MutationObserver(note).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  });
+
+  // Typing while the slow request is out.
+  await write(page, "name: newer\nfields:\n  total: { label: Total due, type: money GBP }\n");
+  await expect(results.locator('.fieldrow[data-path="total"]')).toContainText("391.20 GBP");
+  await expect(list).toHaveAttribute("data-stale", "false");
+  await page.waitForTimeout(3000); // past the time the slow answer would have come
+  const seen = await page.evaluate(() => (window as unknown as { seen: string[] }).seen);
+  expect(new Set(seen)).toEqual(new Set(["total"]));
+});
+
+test("what was typed is kept per document until it is saved", async ({ page, request }) => {
+  const invoice = await ready(request, "invoice");
+  const order = await ready(request, "purchase-order");
+  const editor = page.getByRole("textbox", { name: "Spec, in YAML" });
+  const typed = "name: Unsaved\nfields:\n  number: { label: Invoice No. }\n";
+
+  await page.goto(`/d/${invoice}/spec`);
+  await write(page, typed);
+  await page.getByRole("textbox", { name: "Spec name" }).fill("Kept draft");
+  await page.reload();
+  await expect(editor).toContainText("name: Unsaved");
+  await expect(page.getByRole("textbox", { name: "Spec name" })).toHaveValue("Kept draft");
+
+  await page.goto(`/d/${order}/spec`);
+  await expect(page.getByRole("region", { name: "Results" })).toContainText(
+    "Write a spec on the left",
+  );
+
+  await page.goto(`/d/${invoice}/spec`);
+  await expect(editor).toContainText("name: Unsaved");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator(".spec-foot")).toContainText("Saved as Kept draft");
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Results" })).toContainText(
+    "Write a spec on the left",
+  );
+  await request.delete(`/api/specs/${encodeURIComponent("Kept draft")}`);
+});

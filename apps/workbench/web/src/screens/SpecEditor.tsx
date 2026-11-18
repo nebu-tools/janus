@@ -31,19 +31,46 @@ const TONE_COLOR = { good: "var(--moss)", warn: "var(--marmalade)", bad: "var(--
 interface Draft {
   text: string;
   name: string;
+  /** The text of the spec last opened or saved; null when there was none. */
+  base: string | null;
 }
-// What was typed for each document, kept while the page stays open.
-const drafts = new Map<string, Draft>();
+const EMPTY: Draft = { text: "", name: "", base: null };
 const NONE: readonly FieldOut[] = [];
 
+// What was typed for each document is kept in the browser's storage under the document's
+// hash, until it is saved or equals the spec it came from. Storage can be full or switched
+// off; then the text is kept only while the page is open.
+const draftKey = (document: string) => `janus.draft.${document}`;
+
+function loadDraft(document: string): Draft {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(draftKey(document)) ?? "null");
+    const { text, name, base } = (raw ?? {}) as Partial<Record<keyof Draft, unknown>>;
+    if (typeof text === "string" && typeof name === "string") {
+      return { text, name, base: typeof base === "string" ? base : null };
+    }
+  } catch {
+    // Nothing readable is kept.
+  }
+  return EMPTY;
+}
+
+function keepDraft(document: string, draft: Draft) {
+  try {
+    if (draft.text === (draft.base ?? "")) localStorage.removeItem(draftKey(document));
+    else localStorage.setItem(draftKey(document), JSON.stringify(draft));
+  } catch {
+    // The draft stays in memory only.
+  }
+}
+
 export function SpecEditor({ document }: { document: DocumentRow }) {
-  const [draft, setDraft] = useState<Draft>(
-    () => drafts.get(document.id) ?? { text: "", name: "" },
-  );
+  const [draft, setDraft] = useState<Draft>(() => loadDraft(document.id));
   const [lastAnswer, setAnswer] = useState<ExtractOut | null>(null);
   // While a spec does not load, the last results stay in place under the error.
   const [lastFields, setFields] = useState<readonly FieldOut[]>(NONE);
-  const [busy, setRunning] = useState(false);
+  // The text the results shown were answered for. Any other text makes them stale.
+  const [answered, setAnswered] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [pages, setPages] = useState<readonly PageSummary[]>([]);
   const [saved, setSaved] = useState<readonly SpecRow[]>([]);
@@ -53,9 +80,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   const scroller = useRef<PageScrollerHandle>(null);
   const results = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    drafts.set(document.id, draft);
-  }, [document.id, draft]);
+  useEffect(() => keepDraft(document.id, draft), [document.id, draft]);
 
   useEffect(() => {
     api.inspect(document.id).then(
@@ -70,16 +95,15 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
       liveRun<string, ExtractOut>({
         delay: 300,
         run: (text, signal) => api.extract(document.id, text, signal),
-        onStart: () => setRunning(true),
-        onResult: (out) => {
+        onResult: (out, text) => {
           setAnswer(out);
           if (!out.problem) setFields(out.fields ?? []);
           setFailure(null);
-          setRunning(false);
+          setAnswered(text);
         },
-        onError: (e) => {
+        onError: (e, text) => {
           setFailure(message(e));
-          setRunning(false);
+          setAnswered(text);
         },
       }),
     [document.id],
@@ -95,7 +119,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   // An empty editor shows nothing, whatever the last run answered.
   const answer = blank ? null : lastAnswer;
   const fields = blank ? NONE : lastFields;
-  const running = !blank && busy;
+  const running = !blank && answered !== draft.text;
   const problem = answer?.problem ?? null;
   const groups = useMemo(() => groupFields(fields), [fields]);
   const byPath = useMemo(() => new Map(fields.map((f) => [f.path, f])), [fields]);
@@ -163,7 +187,9 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
       return;
     }
     try {
-      await api.saveSpec(name, draft.text);
+      const text = draft.text;
+      await api.saveSpec(name, text);
+      setDraft((d) => ({ ...d, base: text }));
       setSaved(await api.specs());
       setSaveNote(`Saved as ${name}`);
     } catch (e) {
@@ -174,7 +200,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   const open = async (name: string) => {
     try {
       const spec = await api.spec(name);
-      setDraft({ text: spec.text, name: spec.name });
+      setDraft({ text: spec.text, name: spec.name, base: spec.text });
       setSelected(null);
       setSaveNote("");
     } catch (e) {
@@ -240,7 +266,13 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
         <div className="results-head">
           <h2>Results</h2>
           <span className="quiet" role="status">
-            {running ? "Running" : groups.length > 0 && !problem ? tally(groups) : ""}
+            {running
+              ? groups.length > 0
+                ? "Running. These results are for the earlier text."
+                : "Running"
+              : groups.length > 0 && !problem
+                ? tally(groups)
+                : ""}
           </span>
         </div>
         {failure !== null ? (
@@ -269,7 +301,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
             </button>
           </div>
         ) : (
-          <ul className="fields" data-stale={problem !== null || failure !== null}>
+          <ul className="fields" data-stale={running || problem !== null || failure !== null}>
             {groups.map((group) => (
               <FieldItem
                 key={group.field.path}

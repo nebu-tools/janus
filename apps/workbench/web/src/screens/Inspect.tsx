@@ -29,7 +29,8 @@ export function Inspect({ document }: { document: DocumentRow }) {
   const [shown, setShown] = useState<ReadonlySet<LayerKey>>(new Set(["headings", "tables"]));
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<{ phrase: string; hits: readonly Hit[] } | null>(null);
-  const [searching, setSearching] = useState(false);
+  // The phrase the last answer was for. While it is not the phrase typed, the hits are old.
+  const [answered, setAnswered] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const scroller = useRef<PageScrollerHandle>(null);
   const asked = useRef(new Set<number>());
@@ -57,15 +58,14 @@ export function Inspect({ document }: { document: DocumentRow }) {
       liveRun<string, Inspection>({
         delay: 200,
         run: (phrase, signal) => api.inspect(document.id, phrase, signal),
-        onStart: () => setSearching(true),
         onResult: (found, phrase) => {
           setSearch({ phrase, hits: found.hits });
           setPicked(null);
-          setSearching(false);
+          setAnswered(phrase);
         },
-        onError: (e) => {
+        onError: (e, phrase) => {
           setError(message(e));
-          setSearching(false);
+          setAnswered(phrase);
         },
       }),
     [document.id],
@@ -77,12 +77,12 @@ export function Inspect({ document }: { document: DocumentRow }) {
     if (text.trim() === "") {
       finder.cancel();
       setSearch(null);
-      setSearching(false);
     } else {
       finder.submit(text.trim());
     }
   };
 
+  const searching = query.trim() !== "" && answered !== query.trim();
   const hits = search?.hits ?? NO_HITS;
   const boxes = useCallback(
     (page: number): PageBox[] => {

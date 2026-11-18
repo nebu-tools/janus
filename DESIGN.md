@@ -694,12 +694,18 @@ label must.
 
 The spec editor has the YAML on the left, the results in the middle and the page on the right.
 Each edit runs `extract` on the open document after 300 ms without typing. The library reuses
-the layer and its index, so a spec on 100 pages takes under 100 ms. Every run has a number. A
-newer edit aborts the run before it, and an answer is shown only when its number is the newest,
-so a slow answer for an older edit never replaces a newer one. Each field shows its status,
-value and message. Selecting a field scrolls to its page and draws its boxes, and hovering a box
-names its field. A load error is marked on its line, and the last results stay in place, dimmed,
-until the spec loads again. A spec is saved on the server under a name.
+the layer and its index, so a spec on 100 pages takes under 100 ms. An edit aborts the run in
+flight at once, and from then on no answer to older text is shown, also while the edit waits
+its 300 ms. Until the answer to the current text arrives, the results stay in place, dimmed,
+under the label "Running. These results are for the earlier text." Opening another document
+stops every run. Each field shows its status, value and message. Selecting a field scrolls to
+its page and draws its boxes, and hovering a box names its field. A load error is marked on its
+line, and the last results stay dimmed until the spec loads again.
+
+A spec is saved on the server under a name. What is typed is kept in the browser's storage for
+each document, under the document's hash, so it survives a reload. It is dropped once it is
+saved or equals the spec it was opened from. Removing a document leaves the saved specs as they
+are, and its stored text comes back when the same file is sent again.
 
 The page view is one component that knows nothing about the workbench. It takes a page image, the
 page's size, and a list of boxes with a colour and a label, and it reports the box the pointer

@@ -110,6 +110,10 @@
             "title": "Name",
             "type": "string"
           },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
           "pages": {
             "anyOf": [
               {
@@ -166,6 +170,7 @@
         },
         "required": [
           "id",
+          "order",
           "name",
           "size",
           "added"
@@ -882,7 +887,7 @@
         "summary": "List Documents"
       },
       "post": {
-        "description": "Take a PDF as the request body and queue it for reading.\n\nA file that is not a readable PDF is kept too: its row says why it failed.",
+        "description": "Take a PDF as the request body and queue it for reading.\n\nA file that does not start as a PDF is refused. A PDF that cannot be read is kept, and\nits row says why it failed. The name is only shown; see `shown_name`.",
         "operationId": "add_document",
         "parameters": [
           {
@@ -891,7 +896,6 @@
             "required": false,
             "schema": {
               "default": "document.pdf",
-              "maxLength": 300,
               "title": "Name",
               "type": "string"
             }
@@ -938,6 +942,7 @@
     },
     "/api/documents/{document}": {
       "delete": {
+        "description": "Remove the document and its files. A read of it in progress is stopped first.",
         "operationId": "delete_document",
         "parameters": [
           {

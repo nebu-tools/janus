@@ -13,18 +13,17 @@ const setup = () => {
   const pending: Pending[] = [];
   const results: string[] = [];
   const errors: unknown[] = [];
-  const started: string[] = [];
+
   const live = liveRun<string, string>({
     delay: 300,
     run: (input, signal) =>
       new Promise((answer, fail) => {
         pending.push({ input, signal, answer, fail });
       }),
-    onStart: (input) => started.push(input),
     onResult: (output) => results.push(output),
     onError: (error) => errors.push(error),
   });
-  return { live, pending, results, errors, started };
+  return { live, pending, results, errors };
 };
 
 const settle = () => vi.advanceTimersByTimeAsync(0);
@@ -43,7 +42,7 @@ describe("liveRun", () => {
   });
 
   it("runs once for a burst of inputs, with the last one", () => {
-    const { live, pending, started } = setup();
+    const { live, pending } = setup();
     live.submit("a");
     vi.advanceTimersByTime(200);
     live.submit("ab");
@@ -53,7 +52,6 @@ describe("liveRun", () => {
     expect(pending).toHaveLength(0);
     vi.advanceTimersByTime(1);
     expect(pending.map((p) => p.input)).toEqual(["abc"]);
-    expect(started).toEqual(["abc"]);
   });
 
   it("delivers the answer of the newest run", async () => {
@@ -92,24 +90,42 @@ describe("liveRun", () => {
     expect(results).toEqual(["NEW"]);
   });
 
-  it("keeps the answer of a run while a later input is still waiting", async () => {
+  it("drops an answer that arrives while a later input waits for its turn", async () => {
     const { live, pending, results } = setup();
     live.submit("a");
     vi.advanceTimersByTime(300);
     live.submit("ab");
     pending[0]?.answer("A");
     await settle();
-    expect(results).toEqual(["A"]);
+    expect(results).toEqual([]);
+    vi.advanceTimersByTime(300);
+    pending[1]?.answer("AB");
+    await settle();
+    expect(results).toEqual(["AB"]);
   });
 
-  it("aborts the run it replaces", () => {
+  it("aborts the run in flight as soon as a new input comes", () => {
     const { live, pending } = setup();
     live.submit("old");
     vi.advanceTimersByTime(300);
     live.submit("new");
+    expect(pending[0]?.signal.aborted).toBe(true); // before the new run starts
     vi.advanceTimersByTime(300);
-    expect(pending[0]?.signal.aborted).toBe(true);
     expect(pending[1]?.signal.aborted).toBe(false);
+  });
+
+  it("drops a late failure of a run that a newer input replaced", async () => {
+    const { live, pending, errors, results } = setup();
+    live.submit("old");
+    vi.advanceTimersByTime(300);
+    live.submit("new");
+    pending[0]?.fail(new DOMException("aborted", "AbortError"));
+    await settle();
+    vi.advanceTimersByTime(300);
+    pending[1]?.answer("NEW");
+    await settle();
+    expect(errors).toEqual([]);
+    expect(results).toEqual(["NEW"]);
   });
 
   it("drops the failure of an older run and reports the newest one", async () => {
