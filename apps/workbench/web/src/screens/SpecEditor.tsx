@@ -6,7 +6,7 @@ import type { DocumentRow, ExtractOut, FieldOut, PageSummary, SpecRow } from "..
 import { groupFields, tally } from "../lib/fields.ts";
 import type { FieldGroup } from "../lib/fields.ts";
 import { formatValue } from "../lib/format.ts";
-import { liveRun } from "../lib/liveRun.ts";
+import { useLiveRun } from "../lib/liveRun.ts";
 import { Editor } from "../ui/Editor.tsx";
 import { PageScroller } from "../ui/PageScroller.tsx";
 import type { PageScrollerHandle } from "../ui/PageScroller.tsx";
@@ -66,12 +66,7 @@ function keepDraft(document: string, draft: Draft) {
 
 export function SpecEditor({ document }: { document: DocumentRow }) {
   const [draft, setDraft] = useState<Draft>(() => loadDraft(document.id));
-  const [lastAnswer, setAnswer] = useState<ExtractOut | null>(null);
-  // While a spec does not load, the last results stay in place under the error.
-  const [lastFields, setFields] = useState<readonly FieldOut[]>(NONE);
-  // The text the results shown were answered for. Any other text makes them stale.
-  const [answered, setAnswered] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [pagesFailure, setPagesFailure] = useState<string | null>(null);
   const [pages, setPages] = useState<readonly PageSummary[]>([]);
   const [saved, setSaved] = useState<readonly SpecRow[]>([]);
   const [saveNote, setSaveNote] = useState("");
@@ -85,42 +80,26 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   useEffect(() => {
     api.inspect(document.id).then(
       (inspection) => setPages(inspection.pages),
-      (e: unknown) => setFailure(message(e)),
+      (e: unknown) => setPagesFailure(message(e)),
     );
     api.specs().then(setSaved, () => {});
   }, [document.id]);
 
-  const runner = useMemo(
-    () =>
-      liveRun<string, ExtractOut>({
-        delay: 300,
-        run: (text, signal) => api.extract(document.id, text, signal),
-        onResult: (out, text) => {
-          setAnswer(out);
-          if (!out.problem) setFields(out.fields ?? []);
-          setFailure(null);
-          setAnswered(text);
-        },
-        onError: (e, text) => {
-          setFailure(message(e));
-          setAnswered(text);
-        },
-      }),
+  // An empty editor runs nothing and shows nothing. While a spec does not load, the last
+  // results stay in place, stale, under its problem.
+  const blank = draft.text.trim() === "";
+  const run = useLiveRun<string, ExtractOut>(
+    blank ? null : draft.text,
+    () => ({
+      delay: 300,
+      run: (text, signal) => api.extract(document.id, text, signal),
+      keep: (out) => !out.problem,
+    }),
     [document.id],
   );
-  useEffect(() => () => runner.cancel(), [runner]);
-
-  const blank = draft.text.trim() === "";
-  useEffect(() => {
-    if (blank) runner.cancel();
-    else runner.submit(draft.text);
-  }, [draft.text, blank, runner]);
-
-  // An empty editor shows nothing, whatever the last run answered.
-  const answer = blank ? null : lastAnswer;
-  const fields = blank ? NONE : lastFields;
-  const running = !blank && answered !== draft.text;
-  const problem = answer?.problem ?? null;
+  const fields = run.shown?.output.fields ?? NONE;
+  const problem = run.answer?.problem ?? null;
+  const stale = run.stale;
   const groups = useMemo(() => groupFields(fields), [fields]);
   const byPath = useMemo(() => new Map(fields.map((f) => [f.path, f])), [fields]);
 
@@ -151,31 +130,34 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
         const mine = field.path === selected;
         // A records field covers its cells, so it is drawn only when it is the one selected.
         if (parents.has(field.path) && !mine) continue;
-        const label = `${field.path}: ${formatValue(field.value) || field.status}`;
+        const what = `${field.path}: ${formatValue(field.value) || field.status}`;
+        const label = stale ? `${what}, for the earlier text` : what;
         const color = TONE_COLOR[TONE[field.status]];
         for (const box of field.boxes ?? []) {
           if (box.page !== page) continue;
           const look = mine ? "strong" : field.path === hovered ? "wash" : "outline";
-          list.push({ id: field.path, ...box, color, label, look });
+          list.push({ id: field.path, ...box, color, label, look, old: stale });
         }
         if (!mine) continue;
         for (const candidate of field.candidates ?? []) {
           for (const box of candidate.boxes) {
             if (box.page !== page) continue;
-            const text = `${field.path}, one of the places: ${candidate.printed}`;
+            const place = `${field.path}, one of the places: ${candidate.printed}`;
+            const text = stale ? `${place}, for the earlier text` : place;
             list.push({
               id: field.path,
               ...box,
               color: TONE_COLOR.warn,
               label: text,
               look: "wash",
+              old: stale,
             });
           }
         }
       }
       return list;
     },
-    [fields, parents, selected, hovered],
+    [fields, parents, selected, hovered, stale],
   );
 
   const image = useCallback((page: number) => api.pageImage(document.id, page), [document.id]);
@@ -266,18 +248,23 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
         <div className="results-head">
           <h2>Results</h2>
           <span className="quiet" role="status">
-            {running
-              ? groups.length > 0
-                ? "Running. These results are for the earlier text."
-                : "Running"
-              : groups.length > 0 && !problem
-                ? tally(groups)
-                : ""}
+            {[
+              run.pending ? "Running." : "",
+              stale ? "These results are for the earlier text." : "",
+              !run.pending && !stale && groups.length > 0 ? tally(groups) : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
           </span>
         </div>
-        {failure !== null ? (
+        {pagesFailure !== null ? (
           <p className="notice" role="alert">
-            The spec could not be run: {failure}
+            The pages could not be loaded: {pagesFailure}
+          </p>
+        ) : null}
+        {run.error !== null ? (
+          <p className="notice" role="alert" data-testid="run-failure">
+            The spec could not be run: {run.error.message}
           </p>
         ) : null}
         {problem ? (
@@ -301,7 +288,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
             </button>
           </div>
         ) : (
-          <ul className="fields" data-stale={running || problem !== null || failure !== null}>
+          <ul className="fields" data-stale={stale}>
             {groups.map((group) => (
               <FieldItem
                 key={group.field.path}

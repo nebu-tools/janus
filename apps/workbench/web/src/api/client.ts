@@ -47,7 +47,14 @@ async function failure(response: Response): Promise<ApiError> {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    // A request the caller stopped stays what it is. Anything else is the server out of reach.
+    if (init?.signal?.aborted) throw error;
+    throw new Error("the server did not answer", { cause: error });
+  }
   if (!response.ok) throw await failure(response);
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }

@@ -20,6 +20,9 @@ export interface PageBox {
   label: string;
   /** How the box is drawn. "outline" is the default. */
   look?: "outline" | "wash" | "strong";
+  /** The box belongs to an answer that is no longer current. It is drawn dimmed and dashed;
+   * the label says what it belongs to. */
+  old?: boolean;
 }
 
 export interface PageViewProps {
@@ -64,6 +67,7 @@ export function PageView(props: PageViewProps) {
             className="pageview-box"
             data-look={box.look ?? "outline"}
             data-box={box.id}
+            data-old={box.old ? true : undefined}
             data-clickable={onBoxClick ? true : undefined}
             x={box.x0}
             y={box.y0}

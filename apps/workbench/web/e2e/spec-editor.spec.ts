@@ -177,3 +177,79 @@ test("what was typed is kept per document until it is saved", async ({ page, req
   );
   await request.delete(`/api/specs/${encodeURIComponent("Kept draft")}`);
 });
+
+test("page boxes of an earlier text are dimmed with the list, while a run is out and after it failed", async ({
+  page,
+  request,
+}) => {
+  const id = await ready(request, "invoice");
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/extract", async (route) => {
+    const sent = route.request().postData() ?? "";
+    if (sent.includes("slow")) {
+      await held;
+      await route.continue();
+    } else if (sent.includes("refused")) {
+      await route.fulfill({ status: 500, json: { detail: "the run broke" } });
+    } else if (sent.includes("unreachable")) {
+      await route.abort("connectionrefused");
+    } else {
+      await route.continue();
+    }
+  });
+  await page.goto(`/d/${id}/spec`);
+  const results = page.getByRole("region", { name: "Results" });
+  const list = results.locator(".fields");
+  const boxes = page.locator("[data-box]");
+  const old = page.locator("[data-box][data-old]");
+  const fields = (name: string) => `name: ${name}\nfields:\n  number: { label: Invoice No. }\n`;
+  const current = async () => {
+    await expect(list).toHaveAttribute("data-stale", "false");
+    await expect(results).toContainText("1 of 1 field extracted");
+    await expect(boxes).toHaveCount(1);
+    await expect(old).toHaveCount(0);
+    await expect(page.getByTestId("run-failure")).toHaveCount(0);
+  };
+  const dimmed = async () => {
+    await expect(list).toHaveAttribute("data-stale", "true");
+    await expect(results).toContainText("These results are for the earlier text.");
+    await expect(results).not.toContainText("field extracted");
+    await expect(boxes).toHaveCount(1);
+    await expect(old).toHaveCount(1);
+    const opacity = await old.evaluate((element) => Number(getComputedStyle(element).opacity));
+    expect(opacity).toBeLessThan(0.7);
+    await old.hover();
+    await expect(page.getByRole("tooltip")).toContainText("for the earlier text");
+  };
+
+  await write(page, fields("first"));
+  await current();
+
+  await write(page, fields("slow"));
+  await dimmed();
+  await expect(results).toContainText("Running.");
+  release();
+  await current();
+
+  await write(page, fields("refused"));
+  await expect(page.getByTestId("run-failure")).toHaveText(
+    "The spec could not be run: the run broke",
+  );
+  await dimmed();
+  await expect(results).not.toContainText("Running.");
+
+  await write(page, fields("mended"));
+  await current();
+
+  await write(page, fields("unreachable"));
+  await expect(page.getByTestId("run-failure")).toHaveText(
+    "The spec could not be run: the server did not answer",
+  );
+  await dimmed();
+
+  // A spec that does not load leaves the last results dimmed too.
+  await write(page, "name: broken\nfields:\n  number: { labl: Invoice No. }\n");
+  await expect(page.getByTestId("spec-problem")).toBeVisible();
+  await dimmed();
+});

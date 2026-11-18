@@ -50,6 +50,11 @@
   mix-blend-mode: multiply;
 }
 
+.pageview-box[data-old] {
+  opacity: 0.45;
+  stroke-dasharray: 4 3;
+}
+
 .pageview-box[data-clickable] {
   cursor: pointer;
 }

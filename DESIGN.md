@@ -674,7 +674,9 @@ any `Origin` other than its own, on every route. A plain image or script tag sen
 so every answer also carries `Cross-Origin-Resource-Policy: same-origin`, and the browser then
 refuses to hand the answer to the other page; `X-Content-Type-Options: nosniff` keeps the browser
 from reading an answer as a script or style sheet. The other page can learn only that a request
-failed.
+failed. One layer does the `Origin` check and adds the two headers. It is wrapped around the
+whole application, outside the part that answers 500 to an unhandled error, so no answer leaves
+without them.
 
 A spec that does not load is an answer, with the message and the line, and is no HTTP error.
 
@@ -690,17 +692,25 @@ engine and read time, and a bar with the pages read so far while the document is
 Inspect shows the page images with words, lines, headings, tables and table cells drawn on
 them. Each layer can be switched on and off. Each table shows its ID and first rows. A search
 box shows every place a phrase is printed, and whether it begins its line or cell, because a
-label must.
+label must. The search runs 200 ms after the last key.
 
 The spec editor has the YAML on the left, the results in the middle and the page on the right.
 Each edit runs `extract` on the open document after 300 ms without typing. The library reuses
 the layer and its index, so a spec on 100 pages takes under 100 ms. An edit aborts the run in
 flight at once, and from then on no answer to older text is shown, also while the edit waits
-its 300 ms. Until the answer to the current text arrives, the results stay in place, dimmed,
-under the label "Running. These results are for the earlier text." Opening another document
-stops every run. Each field shows its status, value and message. Selecting a field scrolls to
-its page and draws its boxes, and hovering a box names its field. A load error is marked on its
-line, and the last results stay dimmed until the spec loads again.
+its 300 ms. Opening another document stops every run. Each field shows its status, value and
+message. Selecting a field scrolls to its page and draws its boxes, and hovering a box names its
+field. A load error is marked on its line.
+
+One module, `liveRun`, pairs an input with its answer, for the search and for the editor. It
+holds the newest input, whether its run is out, why it failed, and the last answer worth
+showing with the input that answer belongs to. That answer is stale from the moment a newer
+input comes until the newer input is answered, and it stays stale when the newer run fails or
+the spec does not load. Whatever is drawn from a stale answer is dimmed and says what it
+belongs to: the hit list, its count and the hit boxes on the pages name the earlier phrase, and
+the results and their boxes on the pages say "for the earlier text". The boxes are dashed as
+well, so the state does not rest on opacity alone. A failed request shows its message in an
+alert, beside the search field or above the results, and the next answer removes it.
 
 A spec is saved on the server under a name. What is typed is kept in the browser's storage for
 each document, under the document's hash, so it survives a reload. It is dropped once it is

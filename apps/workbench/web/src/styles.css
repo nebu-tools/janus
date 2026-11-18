@@ -592,6 +592,22 @@ select {
   margin-top: 6px;
 }
 
+.find-error {
+  margin-top: 6px;
+}
+
+/* What an old answer left on screen, and the words that say what it belongs to. */
+.old-label {
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-2);
+}
+
+.hits[data-stale="true"] {
+  opacity: 0.55;
+}
+
 .hits {
   display: grid;
   gap: 2px;

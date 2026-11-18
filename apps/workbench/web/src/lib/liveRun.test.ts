@@ -9,7 +9,7 @@ interface Pending {
   fail: (error: unknown) => void;
 }
 
-const setup = () => {
+const setup = (keep?: (output: string) => boolean) => {
   const pending: Pending[] = [];
   const results: string[] = [];
   const errors: unknown[] = [];
@@ -20,8 +20,15 @@ const setup = () => {
       new Promise((answer, fail) => {
         pending.push({ input, signal, answer, fail });
       }),
-    onResult: (output) => results.push(output),
-    onError: (error) => errors.push(error),
+    ...(keep ? { keep } : {}),
+  });
+  // Every answer and every failure the state ever held, in order.
+  let last = live.state();
+  live.subscribe(() => {
+    const now = live.state();
+    if (now.answer !== null && now.answer !== last.answer) results.push(now.answer);
+    if (now.error !== null && now.error !== last.error) errors.push(now.error);
+    last = now;
   });
   return { live, pending, results, errors };
 };
@@ -143,17 +150,139 @@ describe("liveRun", () => {
     expect(results).toEqual([]);
   });
 
-  it("delivers nothing after cancel", async () => {
+  it("delivers nothing after clear", async () => {
     const { live, pending, results } = setup();
     live.submit("a");
     vi.advanceTimersByTime(300);
     live.submit("b");
-    live.cancel();
+    live.clear();
     vi.advanceTimersByTime(1000);
     pending[0]?.answer("A");
     await settle();
     expect(pending).toHaveLength(1);
     expect(pending[0]?.signal.aborted).toBe(true);
     expect(results).toEqual([]);
+  });
+
+  it("is pending from the moment an input comes, and keeps the earlier answer as stale", async () => {
+    const { live, pending } = setup();
+    expect(live.state()).toEqual({
+      input: null,
+      pending: false,
+      error: null,
+      answer: null,
+      shown: null,
+      stale: false,
+    });
+    live.submit("a");
+    expect(live.state()).toMatchObject({ input: "a", pending: true, shown: null, stale: false });
+    vi.advanceTimersByTime(300);
+    pending[0]?.answer("A");
+    await settle();
+    const shown = { input: "a", output: "A" };
+    expect(live.state()).toMatchObject({ pending: false, answer: "A", shown, stale: false });
+
+    live.submit("b"); // before its delay has passed
+    expect(live.state()).toMatchObject({ input: "b", pending: true, answer: null, shown });
+    expect(live.state().stale).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(live.state().stale).toBe(true);
+    pending[1]?.answer("B");
+    await settle();
+    expect(live.state()).toMatchObject({
+      pending: false,
+      answer: "B",
+      shown: { input: "b", output: "B" },
+      stale: false,
+    });
+  });
+
+  it("ends the pending state on a failure and leaves the earlier answer stale", async () => {
+    const { live, pending } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]?.answer("A");
+    await settle();
+    live.submit("b");
+    vi.advanceTimersByTime(300);
+    pending[1]?.fail("no answer"); // not an Error
+    await settle();
+    expect(live.state()).toMatchObject({
+      input: "b",
+      pending: false,
+      answer: null,
+      shown: { input: "a", output: "A" },
+      stale: true,
+    });
+    expect(live.state().error).toEqual(new Error("no answer"));
+
+    live.submit("c");
+    expect(live.state()).toMatchObject({ pending: true, error: null, stale: true });
+    vi.advanceTimersByTime(300);
+    pending[2]?.answer("C");
+    await settle();
+    expect(live.state()).toMatchObject({ error: null, answer: "C", stale: false });
+  });
+
+  it("a first run that fails is not pending and shows nothing", async () => {
+    const { live, pending } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]?.fail(new Error("gone"));
+    await settle();
+    expect(live.state()).toEqual({
+      input: "a",
+      pending: false,
+      error: new Error("gone"),
+      answer: null,
+      shown: null,
+      stale: false,
+    });
+  });
+
+  it("an answer that is not kept leaves the earlier one shown, stale", async () => {
+    const { live, pending } = setup((output) => output !== "BROKEN");
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]?.answer("A");
+    await settle();
+    live.submit("b");
+    vi.advanceTimersByTime(300);
+    pending[1]?.answer("BROKEN");
+    await settle();
+    expect(live.state()).toMatchObject({
+      pending: false,
+      answer: "BROKEN",
+      shown: { input: "a", output: "A" },
+      stale: true,
+    });
+  });
+
+  it("a run that throws at once is a failure like any other", async () => {
+    const live = liveRun<string, string>({
+      delay: 0,
+      run: () => {
+        throw new Error("at once");
+      },
+    });
+    live.submit("a");
+    await settle();
+    expect(live.state()).toMatchObject({ pending: false, error: new Error("at once") });
+  });
+
+  it("clear forgets the input and what was shown, and tells its listeners", async () => {
+    const { live, pending } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]?.answer("A");
+    await settle();
+    let calls = 0;
+    const end = live.subscribe(() => calls++);
+    live.clear();
+    expect(live.state()).toMatchObject({ input: null, shown: null, stale: false, pending: false });
+    expect(calls).toBe(1);
+    end();
+    live.submit("b");
+    expect(calls).toBe(1);
   });
 });

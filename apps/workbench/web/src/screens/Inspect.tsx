@@ -1,10 +1,10 @@
 // What Janus read from a document: its pages with words, lines, headings and tables drawn on
 // them, the tables with their first rows, and every place a searched phrase is printed.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, message } from "../api/client.ts";
 import type { DocumentRow, Hit, Inspection, PageLayout } from "../api/client.ts";
-import { liveRun } from "../lib/liveRun.ts";
+import { useLiveRun } from "../lib/liveRun.ts";
 import { PageScroller } from "../ui/PageScroller.tsx";
 import type { PageScrollerHandle } from "../ui/PageScroller.tsx";
 import type { PageBox } from "../ui/PageView.tsx";
@@ -28,10 +28,8 @@ export function Inspect({ document }: { document: DocumentRow }) {
   const [layouts, setLayouts] = useState<ReadonlyMap<number, PageLayout>>(new Map());
   const [shown, setShown] = useState<ReadonlySet<LayerKey>>(new Set(["headings", "tables"]));
   const [query, setQuery] = useState("");
-  const [search, setSearch] = useState<{ phrase: string; hits: readonly Hit[] } | null>(null);
-  // The phrase the last answer was for. While it is not the phrase typed, the hits are old.
-  const [answered, setAnswered] = useState<string | null>(null);
-  const [picked, setPicked] = useState<number | null>(null);
+  // The hit chosen in the list, and the list it was chosen in. Another list has none chosen.
+  const [pick, setPick] = useState<{ hits: readonly Hit[]; index: number } | null>(null);
   const scroller = useRef<PageScrollerHandle>(null);
   const asked = useRef(new Set<number>());
 
@@ -53,37 +51,16 @@ export function Inspect({ document }: { document: DocumentRow }) {
     [document.id],
   );
 
-  const finder = useMemo(
-    () =>
-      liveRun<string, Inspection>({
-        delay: 200,
-        run: (phrase, signal) => api.inspect(document.id, phrase, signal),
-        onResult: (found, phrase) => {
-          setSearch({ phrase, hits: found.hits });
-          setPicked(null);
-          setAnswered(phrase);
-        },
-        onError: (e, phrase) => {
-          setError(message(e));
-          setAnswered(phrase);
-        },
-      }),
+  const phrase = query.trim();
+  const search = useLiveRun<string, Inspection>(
+    phrase === "" ? null : phrase,
+    () => ({ delay: 200, run: (text, signal) => api.inspect(document.id, text, signal) }),
     [document.id],
   );
-  useEffect(() => () => finder.cancel(), [finder]);
-
-  const type = (text: string) => {
-    setQuery(text);
-    if (text.trim() === "") {
-      finder.cancel();
-      setSearch(null);
-    } else {
-      finder.submit(text.trim());
-    }
-  };
-
-  const searching = query.trim() !== "" && answered !== query.trim();
-  const hits = search?.hits ?? NO_HITS;
+  const hits = search.shown?.output.hits ?? NO_HITS;
+  const picked = pick?.hits === hits ? pick.index : null;
+  // Hits kept from an earlier phrase, while the phrase typed runs or after it failed.
+  const old = search.stale ? `for the earlier phrase "${search.shown?.input}"` : null;
   const boxes = useCallback(
     (page: number): PageBox[] => {
       const list: PageBox[] = [];
@@ -122,13 +99,13 @@ export function Inspect({ document }: { document: DocumentRow }) {
       }
       hits.forEach((hit, i) => {
         if (hit.page !== page) return;
-        const label = `${hit.text} (${where(hit)})`;
+        const label = `${hit.text} (${where(hit)})${old === null ? "" : `, ${old}`}`;
         const look = i === picked ? "strong" : "wash";
-        list.push({ id: `hit:${i}`, ...hit.box, color: HIT_COLOR, label, look });
+        list.push({ id: `hit:${i}`, ...hit.box, color: HIT_COLOR, label, look, old: old !== null });
       });
       return list;
     },
-    [layouts, shown, inspection, hits, picked],
+    [layouts, shown, inspection, hits, picked, old],
   );
 
   const image = useCallback((page: number) => api.pageImage(document.id, page), [document.id]);
@@ -173,19 +150,31 @@ export function Inspect({ document }: { document: DocumentRow }) {
             aria-labelledby="find-title"
             placeholder="Total due"
             value={query}
-            onChange={(event) => type(event.currentTarget.value)}
+            onChange={(event) => setQuery(event.currentTarget.value)}
           />
+          {search.error !== null ? (
+            <p className="notice find-error" role="alert">
+              The search for "{phrase}" failed: {search.error.message}
+            </p>
+          ) : null}
           <p className="quiet find-status" role="status">
-            {query.trim() === ""
+            {phrase === ""
               ? "Shows every line and cell that prints the phrase."
-              : searching || search === null
+              : search.pending
                 ? "Searching"
-                : hits.length === 0
-                  ? `Nothing prints "${search.phrase}". A label locator would not find it.`
-                  : `${count(hits.length, "place")}. A label locator needs the phrase to begin its line or cell.`}
+                : search.error !== null
+                  ? ""
+                  : hits.length === 0
+                    ? `Nothing prints "${phrase}". A label locator would not find it.`
+                    : `${count(hits.length, "place")}. A label locator needs the phrase to begin its line or cell.`}
           </p>
+          {old !== null ? (
+            <p className="old-label" data-testid="old-hits">
+              {count(hits.length, "place")} {old}.
+            </p>
+          ) : null}
           {hits.length > 0 ? (
-            <ol className="hits">
+            <ol className="hits" data-stale={search.stale}>
               {hits.map((hit, i) => (
                 <li key={i}>
                   <button
@@ -193,7 +182,7 @@ export function Inspect({ document }: { document: DocumentRow }) {
                     className="hit"
                     aria-pressed={i === picked}
                     onClick={() => {
-                      setPicked(i);
+                      setPick({ hits, index: i });
                       scroller.current?.show(hit.page, hit.box.y0);
                     }}
                   >
