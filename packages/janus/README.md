@@ -32,8 +32,9 @@ fields:
   lines:
     records:
       header: { description: Description, qty: Qty, amount: Amount }
-      stop: [Subtotal]
-      continues: true # the table may run over pages
+      stop: [Subtotal] # the table ends at this row
+      skip: [Carried forward] # this row is left out wherever it appears
+      continues: header # the table runs on over pages that open with its header
       filled: { first: [qty, amount] } # a line without them wraps the record above
     columns: { qty: integer, amount: money GBP }
 ```
@@ -55,18 +56,57 @@ A `region` takes exactly the words whose box centre lies inside it, in reading o
 that straddles the edge goes to the side that holds more than half of it. A `label` drops a
 colon or a dash with a space after it, and nothing else, so `Amount: -123` reads -123.
 
-A `records` field reads one table on one page. If another of the field's pages prints the
-header again, or opens with rows under the same columns, the field is `incomplete` until the spec
-says which: `continues: true` follows the table over the pages that continue it, and `pages: 1`
-keeps the field to one page. Each record keeps its page. Only in a table that runs over pages are
-running heads and feet left out, and the message lists each one with its pages. Carried-forward
-lines are left out too. A subtotal or total row reads as a record unless `stop:` names it.
+A `records` field reads one table. A table without rules runs while its lines fit its columns,
+each cell starting, ending or centred where its column's header or an earlier cell does. It ends
+at the first line that does not fit, at a row `stop:` names, or at the end of the page. Spacing
+between lines and the words in a row never end it. A subtotal, total or "carried forward" row
+reads as a record unless `stop:` ends the table there or `skip:` leaves the row out. The message
+lists each row `skip:` leaves out with its page.
+
+A table is on one page unless `continues:` says how it runs on. If another of the field's pages
+prints the header again, or opens with rows on the same column edges, the field is `incomplete`
+until the spec says which:
+
+- `continues: header` follows the table only to pages that open with the same header text, and
+  ends it at the first page that does not.
+- `continues: rows` follows the table to pages that open with rows on the same column edges. A
+  line equal to the header is left out, with a note. This form asserts that what is aligned at
+  the top of the next page belongs to the table.
+- `pages: 1` keeps the field to one page.
+
+Each record keeps its page. In a table that runs over pages, running heads and feet are left out
+and the message lists each one with its pages. Any other line above the table on a continued
+page, such as "Table 3 (continued)", makes the field `incomplete` until `skip:` names it.
+
+Janus looks for another table's header inside the table, on a continued page or further down a
+page. A line set like the header (bold, or in another size) where the header is set differently
+from the rows makes the field `incomplete`. A cell that does not read as its column's declared
+type makes the field `invalid`. Either message quotes the line and names `stop:` and `pages:`.
 
 In a table without rules, a line that leaves a column empty may wrap the record above or start a
 new one. Janus does not guess: the field is `ambiguous` and the message quotes the line, until
 `filled: {first: [qty]}` says every record fills `qty` on its first line (other lines join the
 record above), or `filled: {last: [qty]}` says it fills `qty` on its last line (other lines join
-the record below). Such tables are read along the text on pages the viewer turns.
+the record below). `filled` applies only to tables without rules; on a ruled table, where each
+cell is bounded, it is ignored and the message says so. Such tables are read along the text on
+pages the viewer turns.
+
+### Limits
+
+What a page does not show, Janus cannot see. A `records` field can be wrong in these cases:
+
+- Another table's header that is set like the body and the columns are untyped text reads as a
+  record. Under `continues: rows` a table on the next page with columns on the same edges is
+  read as part of the table. Name its first line in `stop:`, type a column, or use
+  `continues: header` or `pages:`.
+- With `filled`, a line after the table that prints in one of its columns, such as a footer
+  under the description column, joins the last record unless `stop:` or `skip:` names it.
+  Without `filled` such a line makes the field `ambiguous`.
+- A cell aligned with neither the left, the right nor the centre of its column ends the table
+  there, and the message quotes the line.
+- The rows' set is taken from the first record. Under a header set like the rows, such as a
+  bold header over bold rows, the set gives no evidence. A first record set unlike the rest,
+  such as a bold first row under a regular header, makes the field `incomplete`.
 
 A `section` runs to the next heading of its rank or to the end of the field's pages, with a note
 when the text may go on past them. Across a page break its running heads and feet are left out
@@ -114,13 +154,14 @@ Each field gets one status:
 | `extracted`   | found in one place, or in several places that print the same value |
 | `missing`     | not found; close labels come back as suggestions, never as values  |
 | `ambiguous`   | found in places that disagree; each place is listed                |
-| `incomplete`  | records that may go on over pages the spec has not declared        |
+| `incomplete`  | records the page shows may go on, or may hold another table        |
 | `invalid`     | found, but the text does not read as the type                      |
 | `unconfirmed` | a proposer gave a value that the page does not confirm             |
 
 "The same value" follows the type: `4.60` and `4.6` are the same decimal, but `001` and `1` are
 different text, while `a b` and `a  b` are the same text. `compare` checks reference data with
-the same rule; a rule can loosen it with a tolerance or `casefold: true`.
+the same rule: values are compared by their type's equality; `casefold: true` loosens text,
+`tolerance:` loosens numbers, nothing else does.
 
 A proposer is your own code, for example a language model, that suggests a value for a field
 Janus could not extract. Janus accepts the suggestion only when its quote is printed once and

@@ -12,7 +12,8 @@ A spec is a YAML or JSON mapping. Each field names one locator and, optionally, 
         records:
           header: {description: Description, qty: Qty, amount: Amount}
           stop: [Subtotal]
-          continues: true          # the table runs over pages
+          skip: [Carried forward]  # rows to leave out
+          continues: header        # the table runs over pages that print its header again
           filled: {first: [qty]}   # a line without a qty continues the record above
         columns: {qty: integer, amount: money GBP}
       survey:
@@ -36,7 +37,6 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
-    StrictBool,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -47,6 +47,7 @@ from pydantic import (
 from pydantic import Field as Constraint
 from pydantic_core import PydanticCustomError
 
+from janus_pdf._index import normalize_label
 from janus_pdf.canonical import canonical_json
 from janus_pdf.values import KINDS, PARTS, Kind, ValueType
 
@@ -77,16 +78,20 @@ class Cell:
 class Records:
     """Rows under a header, one record per row, until a stop label or the end of the rows.
 
-    The page cannot show two things, so the spec declares them. `continues` says that the table
-    runs over pages; without it a records field reads one table on one page. `filled` names the
-    columns every record fills on its first line (`filled_on` "first") or on its last line
-    ("last"), so that a printed line filling only some columns of a table without rules can be
-    given to a record; without it such a line makes the field ambiguous.
+    What the page cannot show, the spec declares. `stop` names the rows that end the table and
+    `skip` the rows to leave out of it, each by the text the row begins with. `continues` says
+    that the table runs over pages: "header" over each following page that opens with the same
+    header, "rows" over each following page that opens with rows on the same column edges; with
+    None a records field reads one table on one page. `filled`, for tables without rules only,
+    names the columns every record fills on its first line (`filled_on` "first") or on its last
+    line ("last"), so that a printed line filling only some columns can be given to a record;
+    without it such a line makes the field ambiguous.
     """
 
     header: tuple[tuple[str, str], ...]  # (key, printed column header)
     stop: tuple[str, ...] = ()
-    continues: bool = False
+    skip: tuple[str, ...] = ()
+    continues: Literal["header", "rows"] | None = None
     filled: tuple[str, ...] = ()
     filled_on: Literal["first", "last"] = "first"
 
@@ -183,7 +188,8 @@ class _FilledSpec(_Model):
 class _RecordsSpec(_Model):
     header: Annotated[dict[StrictStr, Text], Constraint(min_length=1)]
     stop: Names = ()
-    continues: StrictBool = False
+    skip: Names = ()
+    continues: Literal["header", "rows"] | None = None
     filled: _FilledSpec | None = None
 
 
@@ -236,10 +242,11 @@ _EXPECTED = {
     "cell.table": "a table id such as p1t0, or a table number from 1",
     "cell.row": "a row number from 0, or the text of the row's first cell",
     "cell.column": "a column number from 0, or a column header",
-    "records": "a mapping with header and, optionally, stop, continues and filled",
+    "records": "a mapping with header and, optionally, stop, skip, continues and filled",
     "records.header": "a mapping from keys to printed column headers",
     "records.stop": "a label or a list of labels",
-    "records.continues": "true or false",
+    "records.skip": "a label or a list of labels",
+    "records.continues": "header or rows",
     "records.filled": "a mapping with first or last",
     "records.filled.first": "a header key or a list of them",
     "records.filled.last": "a header key or a list of them",
@@ -396,7 +403,10 @@ def _field(path: str, body: _FieldSpec) -> Field:
             filled = getattr(r.filled, on)
             if unknown := [k for k in filled if k not in r.header]:
                 raise SpecError(f"{path}: records.filled.{on} {unknown[0]!r} is not a header key")
-        locator = Records(tuple(r.header.items()), r.stop, r.continues, filled, on)
+        both = {normalize_label(s) for s in r.stop} & {normalize_label(s) for s in r.skip}
+        if both:
+            raise SpecError(f"{path}: records.stop and records.skip both name {sorted(both)[0]!r}")
+        locator = Records(tuple(r.header.items()), r.stop, r.skip, r.continues, filled, on)
     elif body.section is not None:
         locator = Section(body.section, body.under)
     else:

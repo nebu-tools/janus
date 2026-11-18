@@ -12,7 +12,8 @@ Each leaf is equal when the field's type says the two values are the same value
 (an integer, a decimal, a percent, the amount of money) as decimals, text after spacing, dates,
 currencies and comparators exactly. A reference number may be a number or a plain decimal
 string; text matches only text, so an invoice number printed "001" does not match a reference 1.
-A rule can loosen this, never tighten it: a tolerance for numbers, and `casefold` for text. A value that was not
+Values are compared by their type's equality; `casefold: true` loosens text, `tolerance:`
+loosens numbers, nothing else does. A value that was not
 extracted is never a match or a mismatch: it is reported as `not_extracted`, so a missing value
 cannot pass as agreement.
 """

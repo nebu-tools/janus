@@ -13,8 +13,10 @@ field printed "001" in one place and "1" in another is ambiguous.
 Anything short of that gets another status and the reason: `missing` (nothing found; close
 labels are offered as suggestions, never as values), `ambiguous` (several places disagree, or a
 printed line that no declaration gives to a record; each is listed), `incomplete` (records that
-may go on elsewhere: the header is printed again on another page and the spec does not say
-whether the table runs over pages), `invalid` (found, but the text does not read as the type),
+may go on elsewhere or hold another table: the header or rows on its column edges are printed
+again on another page and the spec does not say whether the table runs over pages, a continued
+page opens under a line no key leaves out, or a line in the table is set like its header),
+`invalid` (found, but the text does not read as the type; for records, any cell),
 or `unconfirmed` (a proposer offered a value the document does not bear out).
 """
 
@@ -195,11 +197,12 @@ def _records(view: View, f: Field, loc: Records) -> list[FieldResult]:
         message = f"{found}; {rows.incomplete}" if rows.incomplete else rows.ambiguous
         return [FieldResult(f.path, status, None, printed, anchors, rows.method, message)]
     if not rows.rows:
-        message = "the header is printed, but no rows follow it"
+        message = "; ".join(["the header is printed, but no rows follow it", *rows.notes])
         return [FieldResult(f.path, "missing", None, printed, anchors, rows.method, message)]
     types = dict(f.columns)
     results: list[FieldResult] = []
     records: list[dict[str, Any]] = []
+    failed: list[tuple[FieldResult, str]] = []
     for row in rows.rows:
         n = len(records)
         record: dict[str, Any] = {}
@@ -209,9 +212,25 @@ def _records(view: View, f: Field, loc: Records) -> list[FieldResult]:
             r = _read(view, f"{f.path}/{n}/{key}", types[key], cell)
             results.append(r)
             record[key] = r.value if r.status == "extracted" else None
+            if r.status == "invalid":
+                failed.append((r, f"the row {row.text!r} on page {row.page}"))
         records.append(record)
-    bad = sum(r.status != "extracted" for r in results)
-    message = found + (f"; {bad} cell(s) not extracted" if bad else "")
+    if failed:
+        # A cell that does not read as its column's type may be another table's header or a
+        # line that is not a record: the rows are not a value.
+        (r, where), more = failed[0], len(failed) - 1
+        message = (
+            f"{found}; {r.path.rsplit('/', 1)[-1]} {r.printed!r} in {where} does not read as "
+            f"its column's type: {r.message}"
+            + (f" (and {more} other cell(s))" if more else "")
+            + "; if the row is another table's header or not a record, end the table before it "
+            "with `stop:`, leave it out with `skip:`, or keep the field to the table's pages "
+            "with `pages:`"
+        )
+        head = FieldResult(f.path, "invalid", None, printed, anchors, rows.method, message)
+        return [head, *results]
+    empty = sum(r.status != "extracted" for r in results)
+    message = found + (f"; {empty} cell(s) with nothing printed" if empty else "")
     head = FieldResult(f.path, "extracted", records, printed, anchors, rows.method, message)
     return [head, *results]
 
@@ -221,11 +240,7 @@ def _found(rows: Rows) -> str:
     pages = sorted({r.page for r in rows.rows}) or list(rows.pages[:1])
     n = len(rows.rows)
     out = f"{n} {'row' if n == 1 else 'rows'} under the header on {_pages(tuple(pages))}"
-    if rows.skipped:
-        out += f", leaving out {', '.join(rows.skipped)}"
-    if rows.furniture:
-        out += f"; left out as running heads and feet: {', '.join(rows.furniture)}"
-    return out
+    return "; ".join([out, *rows.notes])
 
 
 def _confirm(

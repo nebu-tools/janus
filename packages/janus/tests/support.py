@@ -113,7 +113,11 @@ def text_layer(text: str, *, name: str = "text", pdf: bytes = b"%PDF-1.7 fake") 
 
 LEDGER = FIXTURES / "stock-ledger.pdf"  # a ruled table over three pages
 
-Item = tuple[float, float, str] | tuple[float, float, str, float]
+Item = (
+    tuple[float, float, str]
+    | tuple[float, float, str, float]
+    | tuple[float, float, str, float, bool]
+)
 
 
 def drawn(
@@ -121,15 +125,16 @@ def drawn(
     rules: Mapping[int, Sequence[tuple[float, float, float, float]]] | None = None,
     rotation: int = 0,
 ) -> Layer:
-    """A layer read with PyMuPDF from an A4 PDF of `pages`, each a list of (x, baseline y, text)
-    or (x, y, text, font size), in Helvetica. `rules` draws lines (x0, y0, x1, y1) on a page by
+    """A layer read with PyMuPDF from an A4 PDF of `pages`, each a list of (x, baseline y, text),
+    (x, y, text, font size) or (x, y, text, font size, bold), in Helvetica. `rules` draws lines (x0, y0, x1, y1) on a page by
     its number; `rotation` turns every page, with the text placed in unrotated coordinates."""
     doc = pymupdf.open()
     for number, items in enumerate(pages, start=1):
         page = doc.new_page(width=595, height=842)
         for item in items:
-            x, y, text, *size = item
-            page.insert_text((x, y), text, fontsize=size[0] if size else 11)
+            x, y, text, *style = item
+            size, bold = style[0] if style else 11, len(style) > 1 and bool(style[1])
+            page.insert_text((x, y), text, fontsize=size, fontname="hebo" if bold else "helv")
         for x0, y0, x1, y1 in (rules or {}).get(number, []):
             page.draw_line((x0, y0), (x1, y1), width=0.6)
         if rotation:
