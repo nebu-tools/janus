@@ -16,7 +16,8 @@ from statistics import median
 
 from rapidfuzz import fuzz, process
 
-from janus_pdf.document import Layer, Line, Span, TableCell, Word
+from janus_pdf.document import Box, Layer, Line, Span, TableCell, Word
+from janus_pdf.document.layout import Rect, rotate
 from janus_pdf.values import clean
 
 SUGGEST_AT = 75  # fuzzy similarity for a suggestion; fuzzy matches never become values
@@ -67,9 +68,13 @@ class Index:
         self._lines = sorted(layer.lines, key=lambda ln: ln.start)
         self._line_starts = [ln.start for ln in self._lines]
         self.page_lines: dict[int, list[Line]] = {p.number: [] for p in layer.pages}
+        self.page_words: dict[int, list[Word]] = {p.number: [] for p in layer.pages}
+        for w in self.words:
+            self.page_words.setdefault(w.box.page, []).append(w)
         for ln in sorted(layer.lines, key=lambda ln: ln.box.y0):
             self.page_lines.setdefault(ln.box.page, []).append(ln)
         self._page_starts = [p.start for p in layer.pages]
+        self._pages = {p.number: p for p in layer.pages}
         self.by_table: dict[str, list[TableCell]] = {t.id: [] for t in layer.tables}
         for c in layer.cells:
             self.by_table.setdefault(c.table_id, []).append(c)
@@ -87,27 +92,44 @@ class Index:
             self._views[pages] = View(self, pages)
         return self._views[pages]
 
+    def upright(self, box: Box) -> Rect:
+        """`box` in its page's reading frame: the page as displayed, turned so that its text
+        runs left to right. On a page that is not turned this is the box itself."""
+        page = self._pages.get(box.page)
+        rect = (box.x0, box.y0, box.x1, box.y1)
+        if page is None or not page.frame:
+            return rect
+        return rotate(rect, page.frame, page.width, page.height)
+
+    def frame_height(self, page: int) -> float:
+        """The height of `page` in its reading frame."""
+        p = self._pages.get(page)
+        if p is None:
+            return 842.0
+        return p.width if p.frame % 180 else p.height
+
     @property
     def furniture(self) -> frozenset[int]:
-        """The start offsets of the running heads, running feet and page numbers: the lines in
-        the top or bottom eighth of a page that a neighbouring page prints at the same height
-        with the same text, digits aside.
+        """The start offsets of the lines that may be running heads, running feet and page
+        numbers: lines in the top or bottom eighth of a page that a neighbouring page prints at
+        the same height with the same text, digits aside, and that are not in a table cell.
 
         Lines are taken by height, from the top down and from the foot up, while every line at
-        that height repeats; the first height that prints anything else, or the end of the
-        margin, ends the run. So a number printed in the same place on two pages of a table is
-        not furniture, nothing inside a table's cells is, and pages that print the same body
-        text, such as a stack of one-page forms, keep their bodies.
+        that height repeats; the first height that prints anything else ends the run.
+
+        This is a candidate list, never a reason on its own to drop text: "Statement 1" and
+        "Statement 2" at the top of two forms qualify. Locators leave these lines out only where
+        the spec says text flows over a page break, and report each line they leave out.
         """
         if self._furniture is None:
-            heights = {p.number: p.height for p in self.layer.pages}
             keys = {
                 ln.start: re.sub(r"\d+", "#", normalize_label(self.text(ln.start, ln.end)))
                 for ln in self._lines
             }
+            tops = {ln.start: self.upright(ln.box)[1] for ln in self._lines}
             at: dict[tuple[str, int], list[float]] = {}
             for ln in self._lines:
-                at.setdefault((keys[ln.start], ln.box.page), []).append(ln.box.y0)
+                at.setdefault((keys[ln.start], ln.box.page), []).append(tops[ln.start])
 
             def repeats(ln: Line) -> bool:
                 key, page = keys[ln.start], ln.box.page
@@ -115,7 +137,7 @@ class Index:
                     bool(key)
                     and self.cell_at(ln.start) is None
                     and any(
-                        abs(y - ln.box.y0) < 2
+                        abs(y - tops[ln.start]) < 2
                         for near in (page - 1, page + 1)
                         for y in at.get((key, near), ())
                     )
@@ -123,16 +145,17 @@ class Index:
 
             out: set[int] = set()
             for page, lines in self.page_lines.items():
-                margin = heights.get(page, 842.0) / 8
+                height = self.frame_height(page)
+                margin = height / 8
                 bands: list[list[Line]] = []
-                for ln in lines:
-                    if bands and ln.box.y0 - bands[-1][0].box.y0 < 2:
+                for ln in sorted(lines, key=lambda ln: tops[ln.start]):
+                    if bands and tops[ln.start] - tops[bands[-1][0].start] < 2:
                         bands[-1].append(ln)
                     else:
                         bands.append([ln])
-                tops = (b for b in bands if b[0].box.y1 <= margin)
-                feet = (b for b in bands[::-1] if b[0].box.y0 >= heights.get(page, 842.0) - margin)
-                for order in (tops, feet):
+                heads = (b for b in bands if self.upright(b[0].box)[3] <= margin)
+                feet = (b for b in bands[::-1] if tops[b[0].start] >= height - margin)
+                for order in (heads, feet):
                     for band in order:
                         if not all(repeats(ln) for ln in band):
                             break
@@ -257,6 +280,10 @@ class View:
         self.cell_at = index.cell_at
         self.line_at = index.line_at
         self.position = index.position
+        self.upright = index.upright
+        self.numbers = tuple(p.number for p in index.layer.pages if self.on(p.number))
+        on = [p for p in index.layer.pages if self.on(p.number)]
+        self.end = on[-1].end if on else 0  # where the text of the field's last page ends
 
     def on(self, page: int) -> bool:
         """Whether the field may look on `page`."""
@@ -273,7 +300,11 @@ class View:
 
     def lines_on(self, page: int) -> list[Line]:
         """The printed lines of `page`, top to bottom."""
-        return self.index.page_lines.get(page, [])
+        return self.index.page_lines.get(page, []) if self.on(page) else []
+
+    def words_on(self, page: int) -> list[Word]:
+        """The words of `page`, in reading order."""
+        return self.index.page_words.get(page, []) if self.on(page) else []
 
     def place(self, words: Iterable[Word]) -> tuple[Span, ...]:
         """`words` as spans of the layer text in reading order: one span for each run of words

@@ -7,11 +7,12 @@ against the extracted value at the same path, so the reference decides what is c
     checks = compare(extraction, {"total": {"amount": "627.00", "currency": "GBP"}},
                      rules={"*/amount": {"tolerance": "0.01"}})
 
-Each leaf compares as the field's type says. A number (an integer, a decimal, a percent, the
-amount of money) compares as a decimal, within an absolute or relative tolerance, and the
-reference may give it as a number or as a plain decimal string. Text compares exactly, or
-ignoring case and spacing, and only with text: an invoice number printed "001" does not match
-a reference 1. Dates, currencies and comparators compare exactly. A value that was not
+Each leaf is equal when the field's type says the two values are the same value
+(`ValueType.same`), the rule extraction uses to tell whether two printed places agree: numbers
+(an integer, a decimal, a percent, the amount of money) as decimals, text after spacing, dates,
+currencies and comparators exactly. A reference number may be a number or a plain decimal
+string; text matches only text, so an invoice number printed "001" does not match a reference 1.
+A rule can loosen this, never tighten it: a tolerance for numbers, and `casefold` for text. A value that was not
 extracted is never a match or a mismatch: it is reported as `not_extracted`, so a missing value
 cannot pass as agreement.
 """
@@ -27,7 +28,6 @@ from janus_pdf.extract import Extraction, FieldResult
 from janus_pdf.values import Scalar, as_number
 
 CheckStatus = Literal["match", "mismatch", "not_extracted"]
-TextMode = Literal["exact", "casefold", "spacing"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +36,7 @@ class Rule:
 
     tolerance: Decimal = Decimal(0)
     relative: bool = False  # tolerance is a fraction of the reference value
-    text: TextMode = "exact"
+    casefold: bool = False  # text that differs only in case matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,16 +52,16 @@ class Check:
 
 
 def rule(raw: Mapping[str, Any] | Rule) -> Rule:
-    """A rule from a mapping such as {tolerance: 0.01, relative: false, text: casefold}."""
+    """A rule from a mapping such as {tolerance: 0.01, relative: false, casefold: true}."""
     if isinstance(raw, Rule):
         return raw
-    unknown = set(raw) - {"tolerance", "relative", "text"}
+    unknown = set(raw) - {"tolerance", "relative", "casefold"}
     if unknown:
         raise ValueError(f"unknown rule option(s): {', '.join(sorted(unknown))}")
     return Rule(
         Decimal(str(raw.get("tolerance", 0))),
         bool(raw.get("relative", False)),
-        raw.get("text", "exact"),
+        bool(raw.get("casefold", False)),
     )
 
 
@@ -95,22 +95,16 @@ def _owners(results: dict[str, FieldResult], path: str) -> list[FieldResult]:
     return [r for r in found if r is not None]
 
 
-def _scalar(owner: FieldResult, path: str) -> Scalar | None:
-    """How the leaf at `path` of `owner`'s value compares, from the owner's type."""
+def _scalar(owner: FieldResult, path: str) -> tuple[Scalar, str | None] | None:
+    """How the leaf at `path` of `owner`'s value compares, from the owner's type, and the
+    component the leaf is."""
     if owner.type is None:
         return None
     rest = path[len(owner.path) + 1 :] if path != owner.path else None
     try:
-        return owner.type.scalar(rest)
+        return owner.type.scalar(rest), rest
     except ValueError:
         return None
-
-
-def _text(value: str, mode: TextMode) -> str:
-    if mode == "exact":
-        return value
-    value = " ".join(value.split())
-    return value.casefold() if mode == "casefold" else value
 
 
 def compare(
@@ -142,7 +136,13 @@ def compare(
             continue
         owner = owners[0]
         anchor = owner.anchors[0] if owner.anchors else None
-        how_compared = _scalar(owner, path)
+        scalar = _scalar(owner, path)
+        if scalar is None or owner.type is None:
+            ok = actual == expected
+            checks.append(Check(path, "match" if ok else "mismatch", expected, actual,
+                                "" if ok else "values differ", anchor))  # fmt: skip
+            continue
+        how_compared, component = scalar
         if how_compared == "number":
             a, e = as_number(actual), as_number(expected)
             if a is None or e is None:
@@ -155,12 +155,13 @@ def compare(
             checks.append(Check(path, status, expected, actual,
                                 f"difference {diff}, tolerance {limit}", anchor))  # fmt: skip
             continue
-        if how_compared == "text":
-            ok = isinstance(expected, str) and _text(actual, how.text) == _text(expected, how.text)
-            why = "" if ok else ("the reference is not text" if not isinstance(expected, str)
-                                 else "values differ")  # fmt: skip
+        if how_compared == "text" and not isinstance(expected, str):
+            ok, why = False, "the reference is not text"
         else:
-            ok = actual == expected
+            a, e = actual, expected
+            if how_compared == "text" and how.casefold:
+                a, e = a.casefold(), e.casefold()
+            ok = owner.type.same(a, e, component)
             why = "" if ok else "values differ"
         checks.append(Check(path, "match" if ok else "mismatch", expected, actual, why, anchor))
     return tuple(checks)

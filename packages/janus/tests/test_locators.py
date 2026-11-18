@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from janus_pdf import Proposal, SpecError, compare, extract, load_spec
+from janus_pdf import Proposal, SpecError, ValueType, compare, extract, load_spec
 from janus_pdf.document import read
 from support import LEDGER, ORDER, REPORT, drawn, text_layer
 
@@ -138,6 +138,15 @@ def test_compare_does_not_match_text_with_a_number():
     assert check.status == "match"
 
 
+def test_compare_uses_the_types_equality():
+    assert ValueType("text").same("a b", "a  b")
+    ex = run(drawn([(50, 50, "a b")]), {"region": {"page": 1, "box": [0, 0, 500, 500]}})
+    (check,) = compare(ex, {"x": "a  b"})
+    assert check.status == "match"
+    (check,) = compare(ex, {"x": "A B"})
+    assert check.status == "mismatch"
+
+
 # --- pages --------------------------------------------------------------------------------------
 
 TWO_PAGES = (
@@ -212,8 +221,13 @@ def test_cell_numbers_count_tables_on_the_fields_pages():
 
 
 # --- records across page breaks -----------------------------------------------------------------
+#
+# A table is on one page unless the spec says `continues: true`. Without it, another page of the
+# field that prints the header again, or opens with rows under the same columns, makes the field
+# incomplete; with it, the table runs on over each following page that does.
 
-LEDGER_SPEC = {"records": {"header": {"item": "Item", "qty": "Qty"}, "stop": ["Total"]},
+LEDGER_SPEC = {"records": {"header": {"item": "Item", "qty": "Qty"}, "stop": ["Total"],
+                           "continues": True},
                "columns": {"qty": "integer"}}  # fmt: skip
 
 
@@ -222,7 +236,7 @@ def ledger():
     return read(LEDGER.read_bytes())
 
 
-def test_a_ruled_table_is_followed_over_pages(ledger):
+def test_a_declared_ruled_table_is_followed_over_pages(ledger):
     ex = run(ledger, LEDGER_SPEC)
     rows = ex.data["x"]
     assert len(rows) == 86
@@ -236,70 +250,116 @@ def test_a_ruled_table_is_followed_over_pages(ledger):
     assert pages == [1, 1, 2, 2, 3, 3]
 
 
+def test_an_undeclared_table_printed_again_is_incomplete(ledger):
+    records = {k: v for k, v in LEDGER_SPEC["records"].items() if k != "continues"}
+    head = one(ledger, {**LEDGER_SPEC, "records": records})
+    assert head.status == "incomplete" and head.value is None
+    assert "printed again on pages 2, 3" in head.message
+    assert "`continues: true`" in head.message and "`pages: 1`" in head.message
+
+
 def test_a_table_cut_off_by_the_fields_pages_is_incomplete(ledger):
     head = one(ledger, {**LEDGER_SPEC, "pages": "1-2"})
     assert head.status == "incomplete" and head.value is None
-    assert "80 rows" in head.message and "carries it forward to page 3" in head.message
+    assert "80 rows" in head.message
+    assert "carries the table forward, but page 3 is outside the field's pages" in head.message
     ex = run(ledger, {**LEDGER_SPEC, "pages": "2-3"})
     assert len(ex.data["x"]) == 46
 
 
-def test_borderless_rows_follow_a_repeated_header():
-    ex = run(drawn(*TWO_PAGES), RECORDS)
+def _form(n: int, statement: bool) -> list:
+    return [*([(50, 50, f"Statement {n}")] if statement else []),
+            (50, 150, "Description"), (300, 150, "Qty"),
+            (50, 175, ["Widget", "Gadget"][n - 1]), (300, 175, str(n))]  # fmt: skip
+
+
+@pytest.mark.parametrize("statement", [True, False])
+def test_two_one_page_forms_are_not_one_table(statement):
+    layer = drawn(_form(1, statement), _form(2, statement))
+    head = one(layer, RECORDS)
+    assert head.status == "incomplete" and head.value is None
+    assert "printed again on page 2" in head.message
+    assert "`continues: true`" in head.message and "`pages: 1`" in head.message
+    ex = run(layer, {**RECORDS, "pages": 1})
+    assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
+    continued = {"records": {**RECORDS["records"], "continues": True}}
+    ex = run(layer, continued)
     assert [r["description"] for r in ex.data["x"]] == ["Widget", "Gadget"]
     assert [ex.result(f"x/{i}/qty").page for i in (0, 1)] == [1, 2]
+    assert ("'Statement 2' on page 2" in ex.result("x").message) == statement
 
 
-def test_borderless_rows_follow_a_page_that_starts_under_the_same_columns():
-    pages = (
-        [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1")],
-        [(50, 50, "Gadget"), (300, 50, "2"), (50, 64, "Sprocket"), (300, 64, "3")],
-    )
-    ex = run(drawn(*pages), RECORDS)
-    assert [r["description"] for r in ex.data["x"]] == ["Widget", "Gadget", "Sprocket"]
+def test_a_table_printed_again_after_a_blank_page_is_incomplete():
+    table = _form(1, False)
+    layer = drawn(table, [], table)
+    head = one(layer, RECORDS)
+    assert head.status == "incomplete" and "printed again on page 3" in head.message
+    continued = {"records": {**RECORDS["records"], "continues": True}}
+    head = one(layer, continued)
+    assert head.status == "incomplete"
+    assert "ends on page 1 because page 2 does not continue it" in head.message
+    assert "printed again on page 3" in head.message and "`pages: 1`" in head.message
+    ex = run(layer, {**RECORDS, "pages": 1})
+    assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
 
 
-def test_rows_whose_next_page_does_not_continue_them_are_incomplete():
+def test_a_page_of_other_text_does_not_continue_the_table():
     pages = (
         [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1")],
         [(120, 50, "A paragraph about something else entirely.")],
     )
-    head = one(drawn(*pages), RECORDS)
-    assert head.status == "incomplete" and head.value is None
-    assert "1 row under the header on page 1" in head.message
-    assert "page 2 neither repeats the header" in head.message and "`pages:`" in head.message
-    ex = run(drawn(*pages), {**RECORDS, "pages": 1})
+    ex = run(drawn(*pages), RECORDS)
     assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
 
 
-def test_carried_and_page_furniture_lines_are_left_out():
+def test_declared_borderless_rows_run_on_under_the_same_columns():
+    pages = (
+        [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1")],
+        [(50, 50, "Gadget"), (300, 50, "2"), (50, 64, "Sprocket"), (300, 64, "3")],
+    )
+    head = one(drawn(*pages), RECORDS)
+    assert head.status == "incomplete" and "printed again on page 2" in head.message
+    ex = run(drawn(*pages), {"records": {**RECORDS["records"], "continues": True}})
+    assert [r["description"] for r in ex.data["x"]] == ["Widget", "Gadget", "Sprocket"]
+
+
+def _ledger_page(n: int) -> list:
+    head = [(50, 60, "Description"), (300, 60, "Qty")] if n == 1 else []
+    rows = [(x, 100 + 14 * i, text) for i in range(3)
+            for x, text in ((50, f"Item {n}{i}"), (300, str(i)))]  # fmt: skip
+    return [(50, 40, "Acme Ltd stock ledger"), *head, *rows, (50, 820, f"Page {n} of 3")]
+
+
+def test_running_heads_and_feet_are_left_out_of_a_declared_table_and_reported():
+    layer = drawn(*(_ledger_page(n) for n in (1, 2, 3)))
+    head = one(layer, RECORDS)
+    assert head.status == "incomplete" and "printed again on pages 2, 3" in head.message
+    ex = run(layer, {"records": {**RECORDS["records"], "continues": True}})
+    rows = ex.data["x"]
+    assert [r["description"] for r in rows] == [f"Item {n}{i}" for n in (1, 2, 3) for i in range(3)]
+    assert [ex.result(f"x/{i}/qty").page for i in (0, 3, 6)] == [1, 2, 3]
+    message = ex.result("x").message
+    assert "'Acme Ltd stock ledger' on pages 2, 3" in message
+    assert "'Page 2 of 3' on page 2" in message and "'Page 3 of 3' on page 3" in message
+
+
+def test_carried_forward_lines_are_left_out():
     pages = (
         [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1"),
-         (50, 94, "Carried forward"), (300, 94, "1"), (50, 820, "Acme page 1")],
+         (50, 94, "Carried forward"), (300, 94, "1")],
         [(50, 50, "Description"), (300, 50, "Qty"), (50, 64, "Brought forward"), (300, 64, "1"),
-         (50, 80, "Gadget"), (300, 80, "2"), (50, 820, "Acme page 2")],
+         (50, 80, "Gadget"), (300, 80, "2")],
     )  # fmt: skip
-    ex = run(drawn(*pages), {**RECORDS, "columns": {"qty": "integer"}})
+    body = {"records": {**RECORDS["records"], "continues": True}, "columns": {"qty": "integer"}}
+    ex = run(drawn(*pages), body)
     assert ex.data["x"] == [
         {"description": "Widget", "qty": 1},
         {"description": "Gadget", "qty": 2},
     ]
     assert "'Carried forward' on page 1" in ex.result("x").message
-
-
-def test_pages_that_print_the_same_body_are_not_one_table():
-    # A stack of one-page forms: the same text at the same heights on every page is a body, not
-    # a running head, so the second form's table does not continue the first.
-    def form(n):
-        return [(50, 50, f"Statement {n}"), (50, 300, "Thank you for your order."),
-                (50, 400, "Description"), (300, 400, "Qty"), (50, 430, f"Item {n}"),
-                (300, 430, str(n)), (50, 820, f"Page {n}")]  # fmt: skip
-
-    head = one(drawn(form(1), form(2)), RECORDS)
-    assert head.status == "incomplete" and head.value is None
-    assert "page 2 neither repeats the header" in head.message
-    ex = run(drawn(form(1), form(2)), {**RECORDS, "pages": 1})
-    assert ex.data["x"] == [{"description": "Item 1", "qty": "1"}]
+    head = one(drawn(*pages), {"records": RECORDS["records"], "pages": 1})
+    assert head.status == "incomplete"
+    assert "carries the table forward, but page 2 is outside the field's pages" in head.message
 
 
 def test_a_stop_label_ends_only_on_a_word_boundary():
@@ -309,44 +369,119 @@ def test_a_stop_label_ends_only_on_a_word_boundary():
     assert [r["d"] for r in ex.data["x"]] == ["Widget", "Subtotalizer"]
 
 
+def test_borderless_records_on_a_rotated_page():
+    layer = drawn(_form(1, True), rotation=90)
+    ex = run(layer, RECORDS)
+    assert ex.data["x"] == [{"description": "Widget", "qty": "1"}]
+
+
 # --- wrapped rows -------------------------------------------------------------------------------
+#
+# In a table without rules, a line that leaves a column empty may wrap the record above or start
+# one. `filled: {first: [...]}` names the columns every record fills on its first line;
+# `filled: {last: [...]}` the columns it fills on its last.
 
-WRAPPED = [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Long widget"), (300, 80, "1"),
-           (50, 94, "with attachment"), (50, 120, "Other"), (300, 120, "2")]  # fmt: skip
+WRAPPED = [(50, 150, "Description"), (300, 150, "Qty"), (50, 175, "Alpha"), (300, 175, "1"),
+           (50, 187, "Long beta"), (50, 205, "attachment"), (300, 205, "2"),
+           (50, 235, "Gamma"), (300, 235, "3")]  # fmt: skip
 
 
-def test_a_wrapped_line_joins_the_record_above():
-    ex = run(drawn(WRAPPED), {**RECORDS, "columns": {"qty": "integer"}})
+def _filled(on: str) -> dict:
+    return {"records": {**RECORDS["records"], "filled": {on: ["qty"]}},
+            "columns": {"qty": "integer"}}  # fmt: skip
+
+
+def test_an_undeclared_partial_line_is_ambiguous():
+    head = one(drawn(WRAPPED), RECORDS)
+    assert head.status == "ambiguous" and head.value is None
+    assert "'Long beta' on page 1 prints only description, not qty" in head.message
+    assert "`filled: {first: [qty]}`" in head.message
+
+
+def test_filled_first_starts_a_record_on_each_line_that_fills_it():
+    ex = run(drawn(WRAPPED), _filled("first"))
     assert ex.data["x"] == [
-        {"description": "Long widget with attachment", "qty": 1},
-        {"description": "Other", "qty": 2},
+        {"description": "Alpha Long beta", "qty": 1},
+        {"description": "attachment", "qty": 2},
+        {"description": "Gamma", "qty": 3},
     ]
     cell = ex.result("x/0/description")
-    assert [a.quote.exact for a in cell.anchors] == ["Long widget", "with attachment"]
+    assert [a.quote.exact for a in cell.anchors] == ["Alpha", "Long beta"]
     first, second = (a.boxes[0] for a in cell.anchors)
     assert second.y0 > first.y0 + 10  # the wrapped line's box, under the first
 
 
-EVEN = [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Long widget"), (300, 80, "1"),
-        (50, 94, "with attachment"), (50, 108, "Other"), (300, 108, "2")]  # fmt: skip
+def test_filled_last_ends_a_record_on_each_line_that_fills_it():
+    ex = run(drawn(WRAPPED), _filled("last"))
+    assert [r["description"] for r in ex.data["x"]] == ["Alpha", "Long beta attachment", "Gamma"]
 
 
-def test_a_line_the_spacing_does_not_settle_is_ambiguous():
-    head = one(drawn(EVEN), RECORDS)
-    assert head.status == "ambiguous" and head.value is None
-    assert "'with attachment' on page 1 prints only description" in head.message
-    assert "'Long widget'" in head.message and "`filled:`" in head.message
+HALVES = [(50, 150, "Description"), (300, 150, "Qty"), (50, 175, "First half"),
+          (50, 187, "Second half"), (300, 187, "2"), (50, 215, "Other"), (300, 215, "3")]  # fmt: skip
 
 
-def test_filled_settles_a_wrapped_line():
-    body = {"records": {"header": {"description": "Description", "qty": "Qty"}, "filled": "qty"}}
-    ex = run(drawn(EVEN), body)
-    assert [r["description"] for r in ex.data["x"]] == ["Long widget with attachment", "Other"]
+def test_a_partial_line_before_the_first_record_is_ambiguous():
+    head = one(drawn(HALVES), RECORDS)
+    assert head.status == "ambiguous" and "'First half' on page 1" in head.message
+    head = one(drawn(HALVES), _filled("first"))
+    assert head.status == "ambiguous"
+    assert "before the first line that fills qty, so it belongs to no record" in head.message
+    ex = run(drawn(HALVES), _filled("last"))
+    assert [r["description"] for r in ex.data["x"]] == ["First half Second half", "Other"]
+
+
+def test_a_partial_line_atop_a_continued_page_joins_the_last_record():
+    pages = (
+        [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1")],
+        [(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "with a bracket"),
+         (50, 94, "Gadget"), (300, 94, "2")],
+    )  # fmt: skip
+    body = _filled("first")
+    head = one(drawn(*pages), body)
+    assert head.status == "incomplete"
+    ex = run(drawn(*pages), {**body, "records": {**body["records"], "continues": True}})
+    assert [r["description"] for r in ex.data["x"]] == ["Widget with a bracket", "Gadget"]
+    assert ex.result("x/0/description").anchors[1].boxes[0].page == 2
 
 
 def test_filled_must_be_a_header_key():
-    with pytest.raises(SpecError, match=r"records\.filled 'amount' is not a header key"):
-        load_spec({"fields": {"x": {"records": {"header": {"d": "D"}, "filled": "amount"}}}})
+    with pytest.raises(SpecError, match=r"records\.filled\.first 'amount' is not a header key"):
+        load_spec({"fields": {"x": {"records": {"header": {"d": "D"},
+                                                "filled": {"first": "amount"}}}}})  # fmt: skip
+    with pytest.raises(SpecError, match=r"records\.filled takes one of first or last"):
+        load_spec({"fields": {"x": {"records": {"header": {"d": "D"},
+                                                "filled": {"first": "d", "last": "d"}}}}})  # fmt: skip
+
+
+# --- sections and pages -------------------------------------------------------------------------
+
+FINDINGS = "The deck shows hairline cracks along the north edge."
+MORE = "The bearings were seized and need replacing soon."
+
+
+def test_a_section_stays_on_the_fields_pages():
+    layer = drawn([(50, 60, "Findings", 16), (50, 84, FINDINGS)], [(50, 60, MORE)])
+    r = one(layer, {"section": "Findings", "pages": 1})
+    assert (r.status, r.value) == ("extracted", FINDINGS)
+    assert "may go on after page 1, outside the field's pages" in r.message
+    assert one(layer, {"section": "Findings"}).value == f"{FINDINGS} {MORE}"
+
+
+def test_a_section_over_a_page_break_leaves_out_running_heads_and_reports_them():
+    def page(n, *body):
+        return [(50, 40, "Bridge inspection report"), *body, (50, 820, f"Page {n} of 2")]
+
+    layer = drawn(
+        page(1, (50, 120, "Findings", 16), (50, 144, FINDINGS)),
+        page(2, (50, 120, MORE), (50, 200, "Notes", 16), (50, 224, "None.")),
+    )
+    r = one(layer, {"section": "Findings"})
+    assert (r.status, r.value) == ("extracted", f"{FINDINGS} {MORE}")
+    assert "'Page 1 of 2' on page 1" in r.message
+    assert "'Bridge inspection report' on page 2" in r.message
+    alone = drawn(page(1, (50, 120, "Findings", 16), (50, 144, FINDINGS),
+                       (50, 200, "Notes", 16), (50, 224, "None.")), page(2))  # fmt: skip
+    assert one(alone, {"section": "Findings"}).message == ""  # ordinary text on one page
 
 
 # --- percent ------------------------------------------------------------------------------------

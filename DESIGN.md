@@ -214,9 +214,12 @@ Each field has exactly one locator:
   counting the tables on the field's pages from 1. `row` is a row number or a row label, and
   `column` a column number or a header. A merged cell is read where it covers the row and the
   column; an empty cell is `missing` with "is empty".
-- `records: {header, stop, filled}` reads a table as a list of objects. See "Records" below.
+- `records: {header, stop, continues, filled}` reads a table as a list of objects. See "Records" below.
 - `section: Heading` reads the text under a heading up to the next heading of the same or higher
-  rank. `under: Parent` picks one heading when the document uses the same heading twice. When the
+  rank, or to the end of the field's pages. When text goes on past the field's last page before
+  the next such heading, the value is extracted with a note that the section may go on there.
+  When the section runs over a page break, its running heads and feet are left out and listed in
+  a note; a section on one page keeps every line. `under: Parent` picks one heading when the document uses the same heading twice. When the
   same heading is printed twice under the same parent, `under:` cannot tell them apart, and the
   message says to narrow the field with `pages:` or to take the text with a `region`.
 - `region: {page, box}` reads exactly the words inside a box, in PDF points from the top left of
@@ -237,47 +240,75 @@ printed row of words when the table has no rules; in a table without rules each 
 header's width. Each row becomes an object whose cells are the exact words in each column, and
 each record keeps the page it is printed on.
 
-Rows end at a row whose first printed text begins with a `stop` label, on a word boundary, or
-at the end of the table; in a table without rules, a gap of more than 2.2 line heights also ends
-them. Carried and brought forward lines
-("Carried forward", "Balance brought forward", "c/f", "continued") are left out, and so are
-running heads, running feet and page numbers. Janus counts a line as furniture when it lies in
-the top or bottom eighth of the page, an adjacent page prints the same text, digits aside, at the
-same height, and it is not in a table cell; the run of such lines ends at the first height that
-prints anything else. Pages that print the same body text, such as a stack of one-page forms,
-keep their bodies, so the second form's table never reads as the first one's continuation.
+What the page settles, and what the spec must declare:
 
-Records follow a table onto the next page only when the continuation is certain:
+| Question                                      | Settled by                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| where the table starts                        | the page: the first row that holds every header                     |
+| where it ends on a page                       | the page: the table's end, or a gap of 2.2 lines; the spec: `stop:` |
+| whether it runs over pages                    | the spec: `continues: true`                                         |
+| which lines of a borderless table are records | the page if each line fills every column; else `filled:`            |
 
-1. the rows run to the foot of their page, with nothing below them but furniture and continued
-   lines;
-2. the next page is on the field's pages; and
-3. that page opens, after furniture and continued lines only, with the same header printed
-   again, or with a table whose column edges match within 1.5 points. For rows without rules,
-   the second case is a first line aligned with the header's columns, edge to edge within 1.5
-   points, in at least two columns. In a ruled table title rows above the repeated header are
-   skipped.
+Rows end at a row whose first printed text begins with a `stop` label, on a word boundary.
+Carried and brought forward lines ("Carried forward", "Balance brought forward", "c/f",
+"continued") are left out and listed in the message. A subtotal or total row is a row like any
+other: when it fills every column it is a record, so name its label in `stop:`.
 
-When the rows run to the foot of a page and the next page does not certainly continue them, the
-field is `incomplete`, with no value. The message gives what was found and why the list may go
-on: "40 rows under the header on page 1; the rows run to the foot of page 1, and page 2 neither
-repeats the header nor starts with a row under the same columns; if the rows end on page 1, say
-so with `pages:` or a `stop:` label". When the field's last page
-ends with a carried-forward line, the rows go on outside the field's pages, and the field is also
+#### Over pages
+
+A records field reads one table on one page unless the spec says `continues: true`.
+
+Without it, Janus looks at the field's other pages. When any of them prints the header again, or
+opens with rows under the same columns, the field is `incomplete`, with no value, and the message
+names those pages and both remedies: "1 row under the header on page 1; the header, or rows under
+the same columns, is printed again on page 2; if the table runs over pages, declare it with
+`continues: true`; if it does not, keep the field to page 1 with `pages: 1`". Two one-page forms
+in one file are such a case, and so is a table that a blank page separates from its twin.
+
+With `continues: true`, the table runs on over each following page of the field that prints the
+header again or opens with rows under the same columns, and ends at the first page that does not,
+or at a `stop:` label. "Opens with rows under the same columns" means, for a ruled table, that
+the page has nothing above its first table but running heads and continued lines, and the table's
+column edges match within 1.5 points; title rows above a repeated header are skipped. Without
+rules, it means the page's first line, after running heads, fills at least two columns and starts
+or ends each of them within 1.5 points of where that column does on the first page. When a
+matching table appears again after the table has ended, the field is `incomplete`, and the message
+says where the table ended and to keep the field to its pages with `pages:`. When the last line
+of the table carries it forward and the table does not go on (the next page is outside the
+field's pages, or does not continue it, or `continues:` is not declared), the field is also
 `incomplete`.
 
-In a table without rules a record can wrap. A line that fills only some of the columns the
-record's first line fills is a wrapped line of that record when it is set closer to the line
-above than records are to one another: at most three quarters of the smallest spacing between
-lines that certainly start records. Its words join that record's cells, and their boxes join
-those cells' anchors. A line the spacing does not settle, and a short line at the top of a page,
-makes the field `ambiguous`, and the message names the line, the record above, and the remedy:
-`filled: qty` says that a line with nothing in the `qty` column continues the record above. A
-ruled table's rows follow its grid and never wrap.
+Only where a table runs over pages are running heads and feet left out of it. A candidate is a
+line in the top or bottom eighth of a page that an adjacent page prints at the same height with
+the same text, digits aside, outside a table cell. In a table without rules, a printed row made
+only of such lines is left out when it leaves a column empty; a row that fills every column is a
+record wherever it stands. Every line left out is listed in the message with its pages: "left out
+as running heads and feet: 'Acme Ltd stock ledger' on pages 2, 3, 'Page 2 of 3' on page 2". On a
+table that stays on one page, nothing is left out on these grounds, so "Statement 2" at the top
+of a second form is ordinary text.
 
-`filled` is the one key records adds for this. A gap rule cannot settle a line set at the record
-spacing, and naming the column that every record fills is something the spec author can read off
-the page.
+#### Wrapped rows
+
+A ruled table's rows follow its grid and never wrap. In a table without rules, a line that leaves
+a column empty can wrap the record above or the record below, or be a record with an empty cell,
+and the page does not say which. Without a declaration such a line makes the field `ambiguous`,
+and the message quotes it: "the line 'Long beta' on page 1 prints only description, not qty, so
+it may continue a record or be one of its own; say which columns every record fills on its first
+line with `filled: {first: [qty]}` (or on its last line with `filled: {last: [...]}`)".
+
+`filled: {first: [qty]}` says that every record fills `qty` on its first line: a line that fills
+it starts a record, and any other line joins the record above. `filled: {last: [qty]}` says every
+record fills `qty` on its last line: a line that fills it ends a record, and the lines before it
+join it. A joined line's words join the record's cells, and their boxes join those cells'
+anchors. A line before the first record (with `first`) or after the last (with `last`) belongs to
+no record, and the field is `ambiguous`. With `continues: true`, records run across the page
+break as lines do, so a partial line at the top of a continued page joins the last record of the
+page before; without it there is no page before.
+
+#### Pages that turn
+
+A table without rules on a page the viewer turns is read in the page's reading frame, so its rows
+run along the text, as they do for ruled tables.
 
 ### How a label matches
 
@@ -358,7 +389,7 @@ Each field result has one status:
 | `extracted`   | The value meets the extracted rule.                                  |
 | `missing`     | The locator found nothing. Suggestions may follow.                   |
 | `ambiguous`   | The locator found several places that disagree. Each is a candidate. |
-| `incomplete`  | Records that may go on where the page cannot show they do.           |
+| `incomplete`  | Records that may go on over pages the spec has not declared.         |
 | `invalid`     | The locator found text, and the text does not parse as the type.     |
 | `unconfirmed` | A proposer gave a value, and Janus could not confirm it on the page. |
 
@@ -429,9 +460,10 @@ read the PDF.
 - The comparator walks every leaf of the reference and looks at the same path in `ex.data`.
   Reference data can leave out fields.
 - `rules` maps path patterns (`fnmatch`, like `items/*/amount`) to `tolerance` (absolute),
-  `relative`, or `text: exact | casefold | spacing`.
-- Values compare by the type of the field that holds them, the same equality the extracted rule
-  uses. A numeric part compares as a number, with the rule's tolerance, and a reference that is
+  `relative`, or `casefold: true` for text.
+- Values compare by the type of the field that holds them, with the type's own equality, the
+  one the extracted rule uses: text equal after spacing, so "a b" matches "a b". A rule only
+  loosens it. A numeric part compares as a number, with the rule's tolerance, and a reference that is
   not a number is a mismatch. A text field compares as text, so one that prints `0451` is never
   equal to the number 451.
 - Statuses: `match`, `mismatch` and `not_extracted`. A reference path that the spec does not

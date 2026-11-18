@@ -101,11 +101,13 @@ class ValueType:
             raise ValueError(f"{self.kind} has no component {part!r}")
         return parts[part]
 
-    def same(self, a: Any, b: Any) -> bool:
-        """Whether `a` and `b` are the same value of this type. None, the not-reported value,
-        equals only None."""
+    def same(self, a: Any, b: Any, component: str | None = None) -> bool:
+        """Whether `a` and `b` are the same value of this type, or of its named component. None,
+        the not-reported value, equals only None."""
         if a is None or b is None:
             return a is None and b is None
+        if component is not None:
+            return _same(self.scalar(component), a, b)
         if self.pick is None and self.kind in PARTS:
             parts = PARTS[self.kind]
             return (

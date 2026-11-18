@@ -33,6 +33,8 @@ fields:
     records:
       header: { description: Description, qty: Qty, amount: Amount }
       stop: [Subtotal]
+      continues: true # the table may run over pages
+      filled: { first: [qty, amount] } # a line without them wraps the record above
     columns: { qty: integer, amount: money GBP }
 ```
 
@@ -53,13 +55,22 @@ A `region` takes exactly the words whose box centre lies inside it, in reading o
 that straddles the edge goes to the side that holds more than half of it. A `label` drops a
 colon or a dash with a space after it, and nothing else, so `Amount: -123` reads -123.
 
-`records` follows a table onto the next page only when that page opens with the header printed
-again, or with rows under the same columns. Carried-forward lines and running heads and feet are
-left out, and each record keeps its page. When the page cannot show whether the rows go on, the
-field is `incomplete`, and the message says how many rows were found and why. In a table without
-rules, a line that fills only some columns joins the record above when it is set closer than the
-records are to one another; when the spacing does not settle it, the field is `ambiguous`, and
-`filled: qty` says that a line with nothing under `qty` continues the record above.
+A `records` field reads one table on one page. If another of the field's pages prints the
+header again, or opens with rows under the same columns, the field is `incomplete` until the spec
+says which: `continues: true` follows the table over the pages that continue it, and `pages: 1`
+keeps the field to one page. Each record keeps its page. Only in a table that runs over pages are
+running heads and feet left out, and the message lists each one with its pages. Carried-forward
+lines are left out too. A subtotal or total row reads as a record unless `stop:` names it.
+
+In a table without rules, a line that leaves a column empty may wrap the record above or start a
+new one. Janus does not guess: the field is `ambiguous` and the message quotes the line, until
+`filled: {first: [qty]}` says every record fills `qty` on its first line (other lines join the
+record above), or `filled: {last: [qty]}` says it fills `qty` on its last line (other lines join
+the record below). Such tables are read along the text on pages the viewer turns.
+
+A `section` runs to the next heading of its rank or to the end of the field's pages, with a note
+when the text may go on past them. Across a page break its running heads and feet are left out
+and listed in a note.
 
 Types include `text`, `integer`, `decimal`, `percent`, `date`, `money`, `count_percent`,
 `mean_sd`, `estimate_interval` and `p_value`. A date such as `11/04/2026` needs a declared
@@ -103,12 +114,13 @@ Each field gets one status:
 | `extracted`   | found in one place, or in several places that print the same value |
 | `missing`     | not found; close labels come back as suggestions, never as values  |
 | `ambiguous`   | found in places that disagree; each place is listed                |
-| `incomplete`  | records that may go on where the page cannot show they do          |
+| `incomplete`  | records that may go on over pages the spec has not declared        |
 | `invalid`     | found, but the text does not read as the type                      |
 | `unconfirmed` | a proposer gave a value that the page does not confirm             |
 
 "The same value" follows the type: `4.60` and `4.6` are the same decimal, but `001` and `1` are
-different text. `compare` checks reference data with the same rule.
+different text, while `a b` and `a  b` are the same text. `compare` checks reference data with
+the same rule; a rule can loosen it with a tolerance or `casefold: true`.
 
 A proposer is your own code, for example a language model, that suggests a value for a field
 Janus could not extract. Janus accepts the suggestion only when its quote is printed once and

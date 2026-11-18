@@ -12,6 +12,8 @@ A spec is a YAML or JSON mapping. Each field names one locator and, optionally, 
         records:
           header: {description: Description, qty: Qty, amount: Amount}
           stop: [Subtotal]
+          continues: true          # the table runs over pages
+          filled: {first: [qty]}   # a line without a qty continues the record above
         columns: {qty: integer, amount: money GBP}
       survey:
         fields:
@@ -34,6 +36,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    StrictBool,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -72,12 +75,20 @@ class Cell:
 
 @dataclass(frozen=True, slots=True)
 class Records:
-    """Rows under a header, one record per row, until a stop label or the end of the rows."""
+    """Rows under a header, one record per row, until a stop label or the end of the rows.
+
+    The page cannot show two things, so the spec declares them. `continues` says that the table
+    runs over pages; without it a records field reads one table on one page. `filled` names the
+    columns every record fills on its first line (`filled_on` "first") or on its last line
+    ("last"), so that a printed line filling only some columns of a table without rules can be
+    given to a record; without it such a line makes the field ambiguous.
+    """
 
     header: tuple[tuple[str, str], ...]  # (key, printed column header)
     stop: tuple[str, ...] = ()
-    filled: str | None = None  # a key every record prints a value under; a line without one
-    # continues the record above (a wrapped description, say)
+    continues: bool = False
+    filled: tuple[str, ...] = ()
+    filled_on: Literal["first", "last"] = "first"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,10 +175,16 @@ class _CellSpec(_Model):
     column: Index | Text
 
 
+class _FilledSpec(_Model):
+    first: Names | None = None
+    last: Names | None = None
+
+
 class _RecordsSpec(_Model):
     header: Annotated[dict[StrictStr, Text], Constraint(min_length=1)]
     stop: Names = ()
-    filled: Text | None = None
+    continues: StrictBool = False
+    filled: _FilledSpec | None = None
 
 
 class _RegionSpec(_Model):
@@ -219,10 +236,13 @@ _EXPECTED = {
     "cell.table": "a table id such as p1t0, or a table number from 1",
     "cell.row": "a row number from 0, or the text of the row's first cell",
     "cell.column": "a column number from 0, or a column header",
-    "records": "a mapping with header and, optionally, stop and filled",
+    "records": "a mapping with header and, optionally, stop, continues and filled",
     "records.header": "a mapping from keys to printed column headers",
     "records.stop": "a label or a list of labels",
-    "records.filled": "a header key",
+    "records.continues": "true or false",
+    "records.filled": "a mapping with first or last",
+    "records.filled.first": "a header key or a list of them",
+    "records.filled.last": "a header key or a list of them",
     "region": "a mapping with page and box",
     "region.page": "a page number from 1",
     "region.box": "four numbers [x0, y0, x1, y1]",
@@ -366,9 +386,17 @@ def _field(path: str, body: _FieldSpec) -> Field:
             raise SpecError(f"{path}: cell.table {c.table} is not on pages {_range(pages)}")
     elif body.records is not None:
         r = body.records
-        if r.filled is not None and r.filled not in r.header:
-            raise SpecError(f"{path}: records.filled {r.filled!r} is not a header key")
-        locator = Records(tuple(r.header.items()), r.stop, r.filled)
+        filled: tuple[str, ...] = ()
+        on: Literal["first", "last"] = "first"
+        if r.filled is not None:
+            given_on = [k for k in ("first", "last") if getattr(r.filled, k) is not None]
+            if len(given_on) != 1:
+                raise SpecError(f"{path}: records.filled takes one of first or last")
+            on = cast("Literal['first', 'last']", given_on[0])
+            filled = getattr(r.filled, on)
+            if unknown := [k for k in filled if k not in r.header]:
+                raise SpecError(f"{path}: records.filled.{on} {unknown[0]!r} is not a header key")
+        locator = Records(tuple(r.header.items()), r.stop, r.continues, filled, on)
     elif body.section is not None:
         locator = Section(body.section, body.under)
     else:

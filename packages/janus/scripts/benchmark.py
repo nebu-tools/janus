@@ -67,6 +67,7 @@ SPECS = [
             "points": {
                 "records": {"header": {"point": "Point", "load": "Load, kN"}},
                 "columns": {"load": "decimal"},
+                "pages": 1,  # every page prints its own table under the same header
             },
             "absent": {"label": "Inspector"},  # missing: builds the suggestion table
         }

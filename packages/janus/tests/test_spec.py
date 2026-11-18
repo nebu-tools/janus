@@ -11,7 +11,12 @@ VALID = {
     "label": {"label": "Total", "column": "Site A", "type": "decimal", "pages": 1},
     "cell": {"cell": {"table": 1, "row": 0, "column": "Qty"}, "type": "integer", "pages": "1-2"},
     "records": {
-        "records": {"header": {"qty": "Qty", "d": "Description"}, "stop": "Total", "filled": "qty"},
+        "records": {
+            "header": {"qty": "Qty", "d": "Description"},
+            "stop": "Total",
+            "continues": True,
+            "filled": {"first": "qty"},
+        },
         "columns": {"qty": "integer"},
         "pages": 2,
     },
@@ -54,7 +59,9 @@ WRONG = [
     ("records", ("records", "header"), {}, "records.header"),
     ("records", ("records", "header", "qty"), 7, "records.header.qty"),
     ("records", ("records", "stop"), 5, "records.stop"),
+    ("records", ("records", "continues"), "yes", "records.continues"),
     ("records", ("records", "filled"), 5, "records.filled"),
+    ("records", ("records", "filled", "first"), 5, "records.filled.first"),
     ("records", ("columns",), ["integer"], "columns"),
     ("records", ("columns", "qty"), 5, "columns.qty"),
     ("records", ("pages",), 2.5, "pages"),

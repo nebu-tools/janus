@@ -12,8 +12,9 @@ field printed "001" in one place and "1" in another is ambiguous.
 
 Anything short of that gets another status and the reason: `missing` (nothing found; close
 labels are offered as suggestions, never as values), `ambiguous` (several places disagree, or a
-printed line could belong to two records; each is listed), `incomplete` (records that may go on
-where the page cannot show they do), `invalid` (found, but the text does not read as the type),
+printed line that no declaration gives to a record; each is listed), `incomplete` (records that
+may go on elsewhere: the header is printed again on another page and the spec does not say
+whether the table runs over pages), `invalid` (found, but the text does not read as the type),
 or `unconfirmed` (a proposer offered a value the document does not bear out).
 """
 
@@ -141,7 +142,8 @@ def _read(view: View, path: str, vt: ValueType, found: Found) -> FieldResult:
     if not found.places:
         return FieldResult(path, "missing", method=method, message=found.reason,
                            suggestions=found.suggestions, type=vt)  # fmt: skip
-    cands, notes = [], []
+    cands: list[Candidate] = []
+    notes = [found.note] if found.note else []
     for place in dict.fromkeys(found.places):
         printed = _printed(view, place)
         anchors = tuple(make_anchor(view.layer, s) for s in place)
@@ -190,7 +192,7 @@ def _records(view: View, f: Field, loc: Records) -> list[FieldResult]:
     found = _found(rows)
     if rows.incomplete or rows.ambiguous:
         status: Status = "incomplete" if rows.incomplete else "ambiguous"
-        message = f"{found}; {rows.incomplete or rows.ambiguous}"
+        message = f"{found}; {rows.incomplete}" if rows.incomplete else rows.ambiguous
         return [FieldResult(f.path, status, None, printed, anchors, rows.method, message)]
     if not rows.rows:
         message = "the header is printed, but no rows follow it"
@@ -221,6 +223,8 @@ def _found(rows: Rows) -> str:
     out = f"{n} {'row' if n == 1 else 'rows'} under the header on {_pages(tuple(pages))}"
     if rows.skipped:
         out += f", leaving out {', '.join(rows.skipped)}"
+    if rows.furniture:
+        out += f"; left out as running heads and feet: {', '.join(rows.furniture)}"
     return out
 
 
