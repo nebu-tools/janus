@@ -2,14 +2,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, message } from "../api/client.ts";
-import type { DocumentRow, ExtractOut, FieldOut, PageSummary, SpecRow } from "../api/client.ts";
-import { groupFields, tally } from "../lib/fields.ts";
+import type { DocumentRow, ExtractOut, FieldOut, Inspection, SpecRow } from "../api/client.ts";
+import { useAnnounce } from "../lib/announce.tsx";
+import { useDraft } from "../lib/drafts.ts";
+import { fieldLabel, groupFields, outcome } from "../lib/fields.ts";
 import type { FieldGroup } from "../lib/fields.ts";
 import { formatValue } from "../lib/format.ts";
 import { useLiveRun } from "../lib/liveRun.ts";
+import { useShortcuts } from "../lib/shortcuts.tsx";
+import { Dialog } from "../ui/Dialog.tsx";
 import { Editor } from "../ui/Editor.tsx";
+import { Failure, Old } from "../ui/Failure.tsx";
 import { PageScroller } from "../ui/PageScroller.tsx";
-import type { PageScrollerHandle } from "../ui/PageScroller.tsx";
+import type { PageScrollerHandle, ScrollerPage } from "../ui/PageScroller.tsx";
 import type { PageBox } from "../ui/PageView.tsx";
 
 const STARTER = `name: My spec
@@ -26,64 +31,41 @@ const TONE: Record<FieldOut["status"], "good" | "warn" | "bad"> = {
   missing: "bad",
   invalid: "bad",
 };
-const TONE_COLOR = { good: "var(--moss)", warn: "var(--marmalade)", bad: "var(--jam)" };
+const TONE_COLOR = { good: "var(--page-good)", warn: "var(--page-warn)", bad: "var(--page-bad)" };
+// A status is never told by colour alone: a cell that is not plainly extracted carries a mark.
+const MARK = { good: "", warn: "?", bad: "!" };
 
-interface Draft {
-  text: string;
-  name: string;
-  /** The text of the spec last opened or saved; null when there was none. */
-  base: string | null;
-}
-const EMPTY: Draft = { text: "", name: "", base: null };
 const NONE: readonly FieldOut[] = [];
+const NO_PAGES: readonly ScrollerPage[] = [];
+const NO_SPECS: readonly SpecRow[] = [];
 
-// What was typed for each document is kept in the browser's storage under the document's
-// hash, until it is saved or equals the spec it came from. Storage can be full or switched
-// off; then the text is kept only while the page is open.
-const draftKey = (document: string) => `janus.draft.${document}`;
-
-function loadDraft(document: string): Draft {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(draftKey(document)) ?? "null");
-    const { text, name, base } = (raw ?? {}) as Partial<Record<keyof Draft, unknown>>;
-    if (typeof text === "string" && typeof name === "string") {
-      return { text, name, base: typeof base === "string" ? base : null };
-    }
-  } catch {
-    // Nothing readable is kept.
-  }
-  return EMPTY;
-}
-
-function keepDraft(document: string, draft: Draft) {
-  try {
-    if (draft.text === (draft.base ?? "")) localStorage.removeItem(draftKey(document));
-    else localStorage.setItem(draftKey(document), JSON.stringify(draft));
-  } catch {
-    // The draft stays in memory only.
-  }
-}
+const shownValue = (field: FieldOut) => formatValue(field.value) || field.printed || "";
 
 export function SpecEditor({ document }: { document: DocumentRow }) {
-  const [draft, setDraft] = useState<Draft>(() => loadDraft(document.id));
-  const [pagesFailure, setPagesFailure] = useState<string | null>(null);
-  const [pages, setPages] = useState<readonly PageSummary[]>([]);
-  const [saved, setSaved] = useState<readonly SpecRow[]>([]);
-  const [saveNote, setSaveNote] = useState("");
+  const announce = useAnnounce();
+  const { draft, setDraft, other, loadOther, keepMine, unstored, dismissUnstored } = useDraft(
+    document.id,
+  );
+  const [note, setNote] = useState("");
+  const [unsaved, setUnsaved] = useState<string | null>(null);
+  const [listOpen, setListOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const scroller = useRef<PageScrollerHandle>(null);
   const results = useRef<HTMLDivElement>(null);
 
-  useEffect(() => keepDraft(document.id, draft), [document.id, draft]);
+  const loaded = useLiveRun<string, Inspection>(
+    document.id,
+    () => ({ delay: 0, run: (id, signal) => api.inspect(id, undefined, signal) }),
+    [],
+  );
+  const pages = loaded.shown?.output.pages ?? NO_PAGES;
 
-  useEffect(() => {
-    api.inspect(document.id).then(
-      (inspection) => setPages(inspection.pages),
-      (e: unknown) => setPagesFailure(message(e)),
-    );
-    api.specs().then(setSaved, () => {});
-  }, [document.id]);
+  const specs = useLiveRun<"all", SpecRow[]>(
+    "all",
+    () => ({ delay: 0, run: (_, signal) => api.specs(signal) }),
+    [],
+  );
 
   // An empty editor runs nothing and shows nothing. While a spec does not load, the last
   // results stay in place, stale, under its problem.
@@ -102,6 +84,17 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   const stale = run.stale;
   const groups = useMemo(() => groupFields(fields), [fields]);
   const byPath = useMemo(() => new Map(fields.map((f) => [f.path, f])), [fields]);
+
+  // The end of a run is said once: what the spec extracted, or that it has a problem.
+  const answer = run.answer;
+  useEffect(() => {
+    if (!answer) return;
+    announce(
+      answer.problem
+        ? "The spec has a problem. The results are for the earlier text."
+        : outcome(groupFields(answer.fields ?? NONE)),
+    );
+  }, [answer, announce]);
 
   const select = useCallback(
     (path: string) => {
@@ -126,29 +119,27 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
   const boxes = useCallback(
     (page: number): PageBox[] => {
       const list: PageBox[] = [];
+      const old = stale ? ", for the earlier text" : "";
       for (const field of fields) {
         const mine = field.path === selected;
         // A records field covers its cells, so it is drawn only when it is the one selected.
         if (parents.has(field.path) && !mine) continue;
-        const what = `${field.path}: ${formatValue(field.value) || field.status}`;
-        const label = stale ? `${what}, for the earlier text` : what;
+        const label = `Field ${fieldLabel(field, shownValue(field))}${old}`;
         const color = TONE_COLOR[TONE[field.status]];
         for (const box of field.boxes ?? []) {
           if (box.page !== page) continue;
           const look = mine ? "strong" : field.path === hovered ? "wash" : "outline";
-          list.push({ id: field.path, ...box, color, label, look, old: stale });
+          list.push({ id: field.path, ...box, color, label, look, selected: mine, old: stale });
         }
         if (!mine) continue;
         for (const candidate of field.candidates ?? []) {
           for (const box of candidate.boxes) {
             if (box.page !== page) continue;
-            const place = `${field.path}, one of the places: ${candidate.printed}`;
-            const text = stale ? `${place}, for the earlier text` : place;
             list.push({
               id: field.path,
               ...box,
               color: TONE_COLOR.warn,
-              label: text,
+              label: `Field ${field.path}, one of the places: ${candidate.printed}${old}`,
               look: "wash",
               old: stale,
             });
@@ -162,46 +153,47 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
 
   const image = useCallback((page: number) => api.pageImage(document.id, page), [document.id]);
 
+  const refreshSpecs = specs.again;
   const save = async () => {
     const name = draft.name.trim();
+    setNote("");
     if (name === "") {
-      setSaveNote("Give the spec a name first.");
+      setUnsaved("Give the spec a name first.");
       return;
     }
     try {
       const text = draft.text;
       await api.saveSpec(name, text);
       setDraft((d) => ({ ...d, base: text }));
-      setSaved(await api.specs());
-      setSaveNote(`Saved as ${name}`);
+      setUnsaved(null);
+      setNote(`Saved as ${name}`);
+      announce(`Saved as ${name}`);
+      refreshSpecs();
     } catch (e) {
-      setSaveNote(`Not saved: ${message(e)}`);
+      setUnsaved(`Not saved: ${message(e)}`);
     }
   };
 
-  const open = async (name: string) => {
-    try {
-      const spec = await api.spec(name);
-      setDraft({ text: spec.text, name: spec.name, base: spec.text });
-      setSelected(null);
-      setSaveNote("");
-    } catch (e) {
-      setSaveNote(`Not opened: ${message(e)}`);
-    }
+  const opened = (spec: { name: string; text: string }) => {
+    setDraft({ text: spec.text, name: spec.name, base: spec.text });
+    setSelected(null);
+    setUnsaved(null);
+    setNote(`Opened ${spec.name}`);
+    setListOpen(false);
+    announce(`Opened ${spec.name}`);
   };
+
+  useShortcuts([
+    { key: "mod+s", does: "Save the spec", run: () => void save() },
+    { key: "mod+Enter", does: "Run the spec now", run: run.again },
+    { key: "]", does: "Next page", run: () => scroller.current?.step(1) },
+    { key: "[", does: "Previous page", run: () => scroller.current?.step(-1) },
+  ]);
 
   return (
     <div className="spec">
-      <section
-        className="spec-edit"
-        aria-label="Spec"
-        onKeyDown={(event) => {
-          if ((event.ctrlKey || event.metaKey) && event.key === "s") {
-            event.preventDefault();
-            void save();
-          }
-        }}
-      >
+      <h1 className="visually-hidden">Spec editor for {document.name}</h1>
+      <section className="spec-edit" aria-label="Spec">
         <div className="spec-tools">
           <input
             className="field"
@@ -217,21 +209,39 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
           <button type="button" className="button primary" onClick={() => void save()}>
             Save
           </button>
-          <select
-            className="field"
-            aria-label="Open a saved spec"
-            value=""
-            disabled={saved.length === 0}
-            onChange={(event) => void open(event.currentTarget.value)}
-          >
-            <option value="">{saved.length === 0 ? "No saved specs" : "Open a saved spec"}</option>
-            {saved.map((spec) => (
-              <option key={spec.name} value={spec.name}>
-                {spec.name}
-              </option>
-            ))}
-          </select>
+          <button type="button" className="button" onClick={() => setListOpen(true)}>
+            Saved specs
+          </button>
+          {unsaved !== null ? (
+            <p className="notice failure spec-unsaved" role="alert" data-testid="save-failure">
+              {unsaved}
+            </p>
+          ) : null}
         </div>
+        {other !== null ? (
+          <div className="bar-note" role="alert" data-testid="other-tab">
+            <p>
+              Another tab changed the unsaved text of this document. This tab has stopped storing
+              its own.
+            </p>
+            <button type="button" className="button" onClick={loadOther}>
+              Load the other tab's text
+            </button>
+            <button type="button" className="button" onClick={keepMine}>
+              Keep this text
+            </button>
+          </div>
+        ) : null}
+        {unstored ? (
+          <div className="bar-note" role="alert" data-testid="unstored">
+            <p>
+              The browser cannot store unsaved text. It is kept only while this page stays open.
+            </p>
+            <button type="button" className="button" onClick={dismissUnstored}>
+              Understood
+            </button>
+          </div>
+        ) : null}
         <Editor
           value={draft.text}
           onChange={(text) => setDraft((d) => (d.text === text ? d : { ...d, text }))}
@@ -239,33 +249,34 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
           label="Spec, in YAML"
           placeholder="name: My spec"
         />
-        <p className="quiet spec-foot" role="status">
-          {saveNote || "Tab indents. Press Escape, then Tab, to leave the editor."}
+        <p className="quiet spec-foot">
+          {note || "Tab indents. Press Escape, then Tab, to leave the editor."}
         </p>
       </section>
 
       <section className="spec-results" aria-label="Results" ref={results}>
         <div className="results-head">
           <h2>Results</h2>
-          <span className="quiet" role="status">
-            {[
-              run.pending ? "Running." : "",
-              stale ? "These results are for the earlier text." : "",
-              !run.pending && !stale && groups.length > 0 ? tally(groups) : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
+          <span className="quiet" data-testid="run-status">
+            {run.pending ? "Running." : !stale && groups.length > 0 ? outcome(groups) : ""}
           </span>
         </div>
-        {pagesFailure !== null ? (
-          <p className="notice" role="alert">
-            The pages could not be loaded: {pagesFailure}
-          </p>
+        {loaded.error !== null ? (
+          <Failure
+            what="The pages could not be loaded"
+            why={loaded.error.message}
+            again={loaded.again}
+            testId="pages-failure"
+          />
         ) : null}
         {run.error !== null ? (
-          <p className="notice" role="alert" data-testid="run-failure">
-            The spec could not be run: {run.error.message}
-          </p>
+          <Failure
+            what="The spec could not be run"
+            why={run.error.message}
+            again={run.again}
+            againLabel="Run again"
+            testId="run-failure"
+          />
         ) : null}
         {problem ? (
           <p className="notice" role="alert" data-testid="spec-problem">
@@ -273,6 +284,7 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
             {problem.message}
           </p>
         ) : null}
+        {stale ? <Old testId="old-results">These results are for the earlier text.</Old> : null}
         {blank ? (
           <div className="empty results-empty">
             <p>
@@ -302,8 +314,160 @@ export function SpecEditor({ document }: { document: DocumentRow }) {
         )}
       </section>
 
-      <PageScroller ref={scroller} pages={pages} image={image} boxes={boxes} onBoxClick={pickBox} />
+      <PageScroller
+        ref={scroller}
+        pages={pages}
+        image={image}
+        boxes={boxes}
+        onBoxActive={setHovered}
+        onBoxChoose={pickBox}
+        explain={api.whyNot}
+      />
+
+      <Dialog title="Saved specs" open={listOpen} onClose={() => setListOpen(false)}>
+        <SavedSpecs
+          specs={specs.shown?.output ?? NO_SPECS}
+          loading={specs.shown === null && specs.pending}
+          failure={specs.error?.message ?? null}
+          again={refreshSpecs}
+          onOpened={opened}
+        />
+      </Dialog>
     </div>
+  );
+}
+
+interface SavedProps {
+  specs: readonly SpecRow[];
+  loading: boolean;
+  /** Why the list could not be loaded. What is listed is then from before. */
+  failure: string | null;
+  again: () => void;
+  onOpened: (spec: { name: string; text: string }) => void;
+}
+
+/** The saved specs, each with the buttons that open and delete it. */
+function SavedSpecs({ specs, loading, failure, again, onOpened }: SavedProps) {
+  const announce = useAnnounce();
+  const [asking, setAsking] = useState<string | null>(null);
+  // The spec whose question was answered with "Keep": the keyboard goes back to its Delete.
+  const [kept, setKept] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ name: string; text: string } | null>(null);
+  const list = useRef<HTMLUListElement>(null);
+
+  const open = async (name: string) => {
+    setFailed(null);
+    try {
+      onOpened(await api.spec(name));
+    } catch (e) {
+      setFailed({ name, text: `Not opened: ${message(e)}` });
+    }
+  };
+
+  const remove = async (name: string) => {
+    setFailed(null);
+    try {
+      await api.deleteSpec(name);
+    } catch (e) {
+      setFailed({ name, text: `Not deleted: ${message(e)}` });
+      return;
+    }
+    setAsking(null);
+    announce(`Deleted ${name}`);
+    // The row is gone; the keyboard goes to the list it was in.
+    list.current?.focus();
+    again();
+  };
+
+  return (
+    <>
+      {failure !== null ? (
+        <Failure
+          what="The saved specs could not be loaded"
+          why={failure}
+          again={again}
+          testId="specs-failure"
+        />
+      ) : null}
+      {failure !== null && specs.length > 0 ? (
+        <Old testId="old-specs">This list is from before the failure.</Old>
+      ) : null}
+      {loading ? <p className="quiet">Loading the saved specs.</p> : null}
+      {!loading && failure === null && specs.length === 0 ? (
+        <p className="quiet">No spec is saved yet. Name the spec and press Save.</p>
+      ) : null}
+      <ul
+        className="saved"
+        ref={list}
+        tabIndex={-1}
+        aria-label="Saved specs"
+        data-stale={failure !== null}
+      >
+        {specs.map((spec) => (
+          <li key={spec.name} className="saved-row">
+            <span className="saved-name">{spec.name}</span>
+            {asking === spec.name ? (
+              <>
+                <span className="quiet">Delete it?</span>
+                <button
+                  key="yes"
+                  type="button"
+                  className="button"
+                  autoFocus
+                  aria-label={`Yes, delete ${spec.name}`}
+                  onClick={() => void remove(spec.name)}
+                >
+                  Delete
+                </button>
+                <button
+                  key="keep"
+                  type="button"
+                  className="button"
+                  aria-label={`Keep ${spec.name}`}
+                  onClick={() => {
+                    setAsking(null);
+                    setKept(spec.name);
+                  }}
+                >
+                  Keep
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  key="open"
+                  type="button"
+                  className="button"
+                  aria-label={`Open ${spec.name}`}
+                  onClick={() => void open(spec.name)}
+                >
+                  Open
+                </button>
+                <button
+                  key="delete"
+                  type="button"
+                  className="button"
+                  aria-label={`Delete ${spec.name}`}
+                  autoFocus={kept === spec.name}
+                  onClick={() => {
+                    setFailed(null);
+                    setKept(null);
+                    setAsking(spec.name);
+                  }}
+                >
+                  Delete
+                </button>
+              </>
+            )}
+            {failed?.name === spec.name ? (
+              <p className="notice failure saved-failure" role="alert">
+                {failed.text}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -327,6 +491,8 @@ function FieldItem({ group, selected, onSelect, onHover }: ItemProps) {
         onClick={() => onSelect(field.path)}
         onPointerEnter={() => onHover(field.path)}
         onPointerLeave={() => onHover(null)}
+        onFocus={() => onHover(field.path)}
+        onBlur={() => onHover(null)}
       >
         <span className="fieldrow-top">
           <span className="fieldname">{field.path}</span>
@@ -343,7 +509,12 @@ function FieldItem({ group, selected, onSelect, onHover }: ItemProps) {
         ))}
       </button>
       {records.length > 0 ? (
-        <div className="records-wrap">
+        <div
+          className="records-wrap"
+          tabIndex={0}
+          role="group"
+          aria-label={`Records of ${field.path}`}
+        >
           <table className="records">
             <thead>
               <tr>
@@ -366,12 +537,22 @@ function FieldItem({ group, selected, onSelect, onHover }: ItemProps) {
                           data-path={cell.path}
                           data-tone={TONE[cell.status]}
                           aria-pressed={selected === cell.path}
+                          // The whole of it for a screen reader: where the cell is, what it
+                          // holds, its status and what the library said about it.
+                          aria-label={`${columns[c]}, row ${r + 1}: ${
+                            shownValue(cell) || "no value"
+                          }, ${cell.status}${cell.message ? `. ${cell.message}` : ""}`}
                           title={
                             cell.status === "extracted" ? undefined : cell.message || cell.status
                           }
                           onClick={() => onSelect(cell.path)}
                         >
-                          {formatValue(cell.value) || cell.printed || cell.status}
+                          {MARK[TONE[cell.status]] !== "" ? (
+                            <span className="cellmark" aria-hidden="true">
+                              {MARK[TONE[cell.status]]}
+                            </span>
+                          ) : null}
+                          {shownValue(cell) || cell.status}
                         </button>
                       ) : null}
                     </td>

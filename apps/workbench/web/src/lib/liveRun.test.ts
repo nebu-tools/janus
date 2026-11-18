@@ -285,4 +285,65 @@ describe("liveRun", () => {
     live.submit("b");
     expect(calls).toBe(1);
   });
+
+  it("again runs the newest input at once, and what is shown is not stale meanwhile", async () => {
+    const { live, pending } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]!.answer("A");
+    await settle();
+
+    live.again();
+    expect(pending).toHaveLength(2);
+    expect(pending[1]!.input).toBe("a");
+    expect(live.state()).toMatchObject({ pending: true, stale: false, error: null });
+    expect(live.state().shown).toEqual({ input: "a", output: "A" });
+
+    pending[1]!.answer("A2");
+    await settle();
+    expect(live.state()).toMatchObject({ pending: false, stale: false, answer: "A2" });
+    expect(live.state().shown).toEqual({ input: "a", output: "A2" });
+  });
+
+  it("again that fails leaves what was shown, stale, with the failure", async () => {
+    const { live, pending } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    pending[0]!.answer("A");
+    await settle();
+
+    live.again();
+    pending[1]!.fail(new Error("gone"));
+    await settle();
+    expect(live.state()).toMatchObject({ pending: false, stale: true, answer: null });
+    expect(live.state().error?.message).toBe("gone");
+    expect(live.state().shown).toEqual({ input: "a", output: "A" });
+
+    // Asking once more keeps the failure on screen until there is an answer.
+    live.again();
+    expect(live.state()).toMatchObject({ pending: true, stale: true });
+    expect(live.state().error?.message).toBe("gone");
+    pending[2]!.answer("A3");
+    await settle();
+    expect(live.state()).toMatchObject({ pending: false, stale: false, error: null });
+  });
+
+  it("again voids the run it replaces", async () => {
+    const { live, pending, results } = setup();
+    live.submit("a");
+    vi.advanceTimersByTime(300);
+    live.again();
+    expect(pending[0]!.signal.aborted).toBe(true);
+    pending[0]!.answer("late");
+    pending[1]!.answer("now");
+    await settle();
+    expect(results).toEqual(["now"]);
+  });
+
+  it("again without an input does nothing", () => {
+    const { live, pending } = setup();
+    live.again();
+    expect(pending).toHaveLength(0);
+    expect(live.state().pending).toBe(false);
+  });
 });

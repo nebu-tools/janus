@@ -1,4 +1,5 @@
-/* PageView stands alone: these rules name no variable from the rest of the workbench. */
+/* PageView stands alone: these rules name no variable from the rest of the workbench.
+   A page is white whatever the theme around it, so every colour here is measured on white. */
 .pageview {
   position: relative;
   width: 100%;
@@ -22,54 +23,100 @@
   opacity: 1;
 }
 
+.pageview-failed {
+  position: absolute;
+  inset: 12% 8% auto;
+  z-index: 1;
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid #6b6455;
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f1c17;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.pageview-failed p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pageview-failed button {
+  padding: 4px 12px;
+  border: 1px solid #6b6455;
+  border-radius: 5px;
+  background: #fff;
+  color: #1f1c17;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pageview-failed button:focus-visible {
+  outline: 2px solid #1f1c17;
+  outline-offset: 2px;
+}
+
 .pageview-boxes {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+  isolation: isolate;
+}
+
+.pageview-boxes:focus-visible {
+  outline: 3px solid #1f1c17;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px #fff;
 }
 
 .pageview-box {
-  fill: currentColor;
-  fill-opacity: 0;
-  stroke: currentColor;
-  stroke-width: 1px;
-  vector-effect: non-scaling-stroke;
-  pointer-events: all;
+  position: absolute;
+  box-sizing: border-box;
+  min-width: 2px;
+  min-height: 2px;
+  border: 1px solid currentColor;
 }
 
 .pageview-box[data-look="wash"] {
-  fill-opacity: 0.16;
+  background: color-mix(in srgb, currentColor 16%, transparent);
   mix-blend-mode: multiply;
 }
 
-.pageview-box[data-look="strong"] {
-  fill-opacity: 0.3;
-  stroke-width: 2px;
+.pageview-box[data-look="strong"],
+.pageview-box:hover,
+.pageview-box[data-active] {
+  border-width: 2px;
+  background: color-mix(in srgb, currentColor 30%, transparent);
   mix-blend-mode: multiply;
 }
 
 .pageview-box[data-old] {
-  opacity: 0.45;
-  stroke-dasharray: 4 3;
+  border-style: dashed;
+  opacity: 0.75;
 }
 
 .pageview-box[data-clickable] {
   cursor: pointer;
 }
 
-.pageview-box:hover {
-  fill-opacity: 0.3;
-  stroke-width: 2px;
+/* The box the keyboard is on: a dark ring with a white one around it, clear on any page. */
+.pageview-boxes:focus-visible .pageview-box[data-active] {
+  outline: 2px solid #1f1c17;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px #fff;
+  mix-blend-mode: normal;
+  opacity: 1;
 }
 
 .pageview-label {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   max-width: 60%;
   padding: 2px 7px;
-  transform: translateY(calc(-100% - 4px));
+  transform: translateY(calc(-100% - 6px));
   border-radius: 3px;
   background: #1f1c17;
   color: #f6eedc;
@@ -82,7 +129,7 @@
 }
 
 .pageview-label[data-below="true"] {
-  transform: translateY(4px);
+  transform: translateY(6px);
 }
 
 @media (prefers-reduced-motion: reduce) {

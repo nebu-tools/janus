@@ -31,6 +31,7 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
+    "@axe-core/playwright": "catalog:",
     "@effect/openapi-generator": "catalog:",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
