@@ -223,7 +223,7 @@ def _context_agrees(anchor: Anchor, candidate: Anchor) -> bool:
     """Whether the text right before and after the quote is still exactly the same, up to
     `_CONTEXT_PROBE` non-space characters on each side (fewer at the document's ends).
     Whitespace is ignored, because engines separate words, lines, and cells differently. Any
-    other difference ("-12" for "12", "fatal" for "nonfatal") makes the match a candidate."""
+    other difference ("-12" for "12", "cast" for "forecast") makes the match a candidate."""
     n = _CONTEXT_PROBE
     old_prefix, new_prefix = _tight(anchor.quote.prefix)[-n:], _tight(candidate.quote.prefix)[-n:]
     old_suffix, new_suffix = _tight(anchor.quote.suffix)[:n], _tight(candidate.quote.suffix)[:n]
@@ -251,10 +251,10 @@ _LINE_END_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\n\s*(?=[^\W\d_])")
 
 
 def quote_spans(text: str, quote: str) -> tuple[Span, ...]:
-    """Where `quote` occurs in `text` as whole tokens ("fatal" is not in "nonfatal").
+    """Where `quote` occurs in `text` as whole tokens ("cast" is not in "forecast").
 
     A quote copied across a hyphenated line break ("evi-\\ndence") is also looked up with the
-    word joined ("evidence") and with the hyphen kept ("non-small"), so it still matches text
+    word joined ("evidence") and with the hyphen kept ("north-west"), so it still matches text
     that another engine spells solid.
     """
     variants = [quote]

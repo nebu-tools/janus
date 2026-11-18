@@ -194,7 +194,7 @@ kind of dash, and no trailing colon. Then:
 1. The label must begin a printed line or a table cell and end at a word boundary. "Total" does
    not match the middle of "Grand total".
 2. In a table, the label must equal the whole cell. A label that is only the start of a cell, like
-   "Age" for "Age at screening, yr", gives a suggestion, not a value.
+   "Length" for "Length, mm, mean ± SD", gives a suggestion, not a value.
 3. Outside a table, the value is the rest of the line. If the rest of the line is empty, the value
    is the words to the right on the same visual row, then the next line.
 4. A value on the label's own line must be set off from the label by a colon or by a gap wider
