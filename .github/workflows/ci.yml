@@ -1,14 +1,9 @@
 name: Janus
 
-# Markdown alone runs nothing; "Run workflow" runs it by hand.
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - "**/*.md"
   pull_request:
-    paths-ignore:
-      - "**/*.md"
   workflow_dispatch:
 
 permissions:
@@ -34,10 +29,10 @@ jobs:
           enable-cache: true
         # Docling pulls in torch and model weights; its tests skip without it.
       - run: uv sync --locked --extra triage
-      - run: uv run --no-sync ruff format --check src tests scripts
-      - run: uv run --no-sync ruff check src tests scripts
-      - run: uv run --no-sync ty check src tests scripts
-      - run: uv run --no-sync pytest
+      - run: uv run ruff format --check src tests scripts
+      - run: uv run ruff check src tests scripts
+      - run: uv run ty check src tests scripts
+      - run: uv run pytest
 
   examples:
     name: Examples (the commands in the READMEs print what the READMEs show)
@@ -52,6 +47,22 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --project packages/janus
-      - run: uv run --no-sync --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
-      - run: uv run --no-sync --project packages/janus ruff check --config packages/janus/pyproject.toml examples
-      - run: uv run --no-sync --project packages/janus python examples/check_readme.py README.md examples/README.md
+      - run: uv run --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
+      - run: uv run --project packages/janus ruff check --config packages/janus/pyproject.toml examples
+      - run: uv run --project packages/janus pytest examples
+      - run: uv run --project packages/janus python examples/check_readme.py README.md examples/README.md
+      - name: Rebuild the examples; fail when a committed file differs
+        working-directory: examples
+        run: |
+          uv run --project ../packages/janus python make_examples.py
+          git status --porcelain .
+          test -z "$(git status --porcelain .)"
+
+  install:
+    name: Install (the checkout installs without extras, and janus runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uvx --isolated --from ./packages/janus janus --help
