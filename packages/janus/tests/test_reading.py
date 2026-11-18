@@ -1,5 +1,6 @@
 """Reading the generated survey report into layers, and anchoring quotes and table cells in it."""
 
+import os
 import re
 
 import pymupdf
@@ -395,3 +396,137 @@ def test_a_failed_read_closes_every_document_and_page(report_pdf, monkeypatch):
         PdfiumParser().parse(report_pdf)
     assert len(made) == 7  # the document, three pages and their text pages
     assert all(m.raw is None for m in made)
+
+
+def test_a_read_with_a_cache_goes_on_from_the_pages_already_read(tmp_path, report_pdf, monkeypatch):
+    from janus_pdf.document import engines
+
+    plain = read(report_pdf)
+    real_page_input = engines.pymupdf_page_input
+    seen: list[int] = []
+
+    def stop_at_third(page, *args, **kwargs):
+        if page.number == 2:
+            raise KeyboardInterrupt
+        seen.append(page.number)
+        return real_page_input(page, *args, **kwargs)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", stop_at_third)
+    with pytest.raises(KeyboardInterrupt):
+        read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    assert seen == [0, 1]
+    assert len(list(tmp_path.glob("*.json"))) == 2  # one file for each page read
+
+    def count(page, *args, **kwargs):
+        seen.append(page.number)
+        return real_page_input(page, *args, **kwargs)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", count)
+    resumed = read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    assert seen == [0, 1, 2, 3]  # the two pages read before are not read again
+    assert resumed == plain  # the same layer, with the same ID, as a read without a cache
+    assert len(list(tmp_path.glob("*.json"))) == len(plain.pages)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", None)  # a third read parses no page
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == plain
+
+
+def _counting(monkeypatch) -> list[int]:
+    """The numbers of the pages PyMuPDF parses from now on, from 0."""
+    from janus_pdf.document import engines
+
+    real_page_input = engines.pymupdf_page_input
+    seen: list[int] = []
+
+    def count(page, *args, **kwargs):
+        seen.append(page.number)
+        return real_page_input(page, *args, **kwargs)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", count)
+    return seen
+
+
+def test_a_cache_file_that_is_not_a_whole_page_is_read_again(tmp_path, report_pdf, monkeypatch):
+    plain = read(report_pdf)
+    read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    first, second = sorted(tmp_path.glob("*.json"))[:2]
+    whole = first.read_bytes()
+    first.write_bytes(whole[:40])  # cut off
+    second.write_bytes(whole)  # a whole page, but page 1 under the name of page 2
+    seen = _counting(monkeypatch)
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == plain
+    assert seen == [0, 1]
+    seen.clear()
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == plain
+    assert seen == []  # both were written again, whole
+
+
+def test_a_cache_entry_is_never_taken_for_other_bytes(tmp_path, report_pdf, monkeypatch):
+    from support import INVOICE
+
+    plain = read(report_pdf)
+    read(INVOICE, PyMuPDFParser(cache=tmp_path))
+    (invoice_page,) = tmp_path.glob("*.json")
+    seen = _counting(monkeypatch)
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == plain
+    assert seen == [0, 1, 2, 3]  # every page parsed, none taken from the cache
+    assert invoice_page.exists()  # and nothing deleted that this read did not write
+
+
+def test_a_cache_entry_is_never_taken_for_another_recipe(tmp_path, report_pdf, monkeypatch):
+    read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    other = PyMuPDFParser(cache=tmp_path)
+    other.recipe = other.recipe.model_copy(
+        update={"settings": (*other.recipe.settings, ("assembly.extra", "1"))}
+    )
+    seen = _counting(monkeypatch)
+    read(report_pdf, other)
+    assert seen == [0, 1, 2, 3]
+    assert len(list(tmp_path.glob("*.json"))) == 8  # both recipes' pages, side by side
+
+
+def test_the_cache_key_covers_the_bytes_and_the_recipe(report_pdf):
+    from janus_pdf.document.engines import page_cache_key
+
+    recipe = PyMuPDFParser().recipe
+    key = page_cache_key(report_pdf, recipe)
+    assert re.fullmatch(r"[0-9a-f]{64}", key)
+    assert page_cache_key(report_pdf, recipe) == key
+    assert page_cache_key(report_pdf + b" ", recipe) != key
+    changed = recipe.model_copy(update={"engine_version": recipe.engine_version + "x"})
+    assert page_cache_key(report_pdf, changed) != key
+
+
+def test_two_writers_of_the_same_page_leave_one_whole_file(tmp_path, report_pdf, monkeypatch):
+    from janus_pdf.document import engines
+
+    store = engines._PageStore(tmp_path, report_pdf, PyMuPDFParser().recipe)
+    with pymupdf.open(stream=report_pdf) as doc:
+        page = engines.pymupdf_page_input(doc[0])
+    real_replace = os.replace
+    nested = []
+
+    def replace(source, target):
+        # The second writer runs to the end between the first writer's write and its move.
+        if not nested:
+            nested.append(source)
+            store.put(page)
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
+    store.put(page)
+    assert [p.name for p in tmp_path.iterdir()] == [f"{store.key}-000001.json"]
+    assert store.get(1) == page
+
+
+def test_page_count_refuses_what_read_refuses(report_pdf):
+    from janus_pdf import page_count
+    from support import REPORT
+
+    assert page_count(report_pdf) == page_count(REPORT) == 4
+    with pytest.raises(NotAPdf):
+        page_count(b"plain text")
+    doc = pymupdf.open(stream=report_pdf, filetype="pdf")
+    locked = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="u", owner_pw="o")
+    with pytest.raises(EncryptedPdf):
+        page_count(locked)

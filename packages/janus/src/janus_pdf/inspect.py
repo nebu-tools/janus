@@ -14,9 +14,12 @@ from janus_pdf.values import clean
 
 @dataclass(frozen=True, slots=True)
 class PageSummary:
-    """One page: how its text was obtained, how many words it has, and its tables."""
+    """One page: its size in points as displayed, how its text was obtained, how many words it
+    has, and its tables."""
 
     number: int
+    width: float
+    height: float
     kind: str  # "text", "ocr" or "broken_encoding"
     words: int
     tables: tuple[str, ...]
@@ -52,6 +55,7 @@ class Heading:
     size: float
     bold: bool
     text: str
+    box: Box
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +87,8 @@ def inspect(
     pages = tuple(
         PageSummary(
             p.number,
+            p.width,
+            p.height,
             p.triage.kind if p.triage else "text",
             sum(1 for w in layer.words if w.box.page == p.number),
             tuple(t.id for t in layer.tables if t.page == p.number),
@@ -104,7 +110,7 @@ def inspect(
         )
         tables.append(TableSummary(t.id, t.page, t.rows, t.cols, preview))
     headings = tuple(
-        Heading(h.box.page, *rank(h), clean(ix.text(h.start, h.end)))
+        Heading(h.box.page, *rank(h), clean(ix.text(h.start, h.end)), h.box)
         for h in ix.headings
         if on(h.box.page)
     )

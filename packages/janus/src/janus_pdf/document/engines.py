@@ -5,15 +5,21 @@ Both read words in the unrotated page, turn them into the page's reading frame a
 """
 
 import ctypes
+import hashlib
 import math
+import os
+import tempfile
 from functools import cache
+from pathlib import Path
 from typing import NamedTuple
 
 import pymupdf
 import pypdfium2
 import pypdfium2.raw as pdfium_c
+from pydantic import TypeAdapter, ValidationError
 from pypdfium2.version import PDFIUM_INFO, PYPDFIUM_INFO
 
+from janus_pdf.canonical import canonical_json
 from janus_pdf.document.layout import (
     ASSEMBLY_VERSION,
     Grid,
@@ -180,10 +186,71 @@ def pymupdf_page_input(page: pymupdf.Page, *, with_tables: bool = True) -> PageI
     )
 
 
-class PyMuPDFParser:
-    """The base layer: PyMuPDF characters, Janus's reading order and table grids."""
+_PAGE_INPUT = TypeAdapter(PageInput)
 
-    def __init__(self) -> None:
+
+class _PageStore:
+    """One document's pages as one recipe read them, a file each.
+
+    A file is named by `key` and the page number. The key is the SHA-256 of the document's own
+    SHA-256 followed by the recipe's canonical JSON, so a file is never taken for other bytes or
+    another recipe. Files with other names are left alone: this class deletes nothing.
+    """
+
+    def __init__(self, directory: Path, pdf: bytes, recipe: ParserRecipe) -> None:
+        self.directory = directory
+        self.key = page_cache_key(pdf, recipe)
+        directory.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, number: int) -> Path:
+        return self.directory / f"{self.key}-{number:06d}.json"
+
+    def get(self, number: int) -> PageInput | None:
+        """The page, or None when it is not there or its file is not a whole page."""
+        try:
+            page = _PAGE_INPUT.validate_json(self._path(number).read_bytes())
+        except (OSError, ValidationError):
+            return None
+        return page if page.number == number else None
+
+    def put(self, page: PageInput) -> None:
+        """Write the page to a file of its own, then move it into place in one step. Two writers
+        of the same page each use their own file, and the last move wins with a whole page."""
+        fd, partial = tempfile.mkstemp(dir=self.directory, prefix=f".{self.key}-", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(_PAGE_INPUT.dump_json(page))
+            Path(partial).replace(self._path(page.number))
+        except BaseException:
+            Path(partial).unlink(missing_ok=True)
+            raise
+
+
+def page_cache_key(pdf: bytes, recipe: ParserRecipe) -> str:
+    """What names a document's pages in a page cache: other bytes or another recipe give
+    another key."""
+    key = hashlib.sha256(b"janus.page-cache.v1\x00")
+    key.update(hashlib.sha256(pdf).digest())
+    key.update(canonical_json(recipe.model_dump(mode="json")))
+    return key.hexdigest()
+
+
+def _lost() -> list[str]:
+    return [w for w in pymupdf.TOOLS.mupdf_warnings().splitlines() if w.startswith("cannot")]
+
+
+class PyMuPDFParser:
+    """The base layer: PyMuPDF characters, Janus's reading order and table grids.
+
+    With `cache`, a directory, each page is written there as it is read (one `.json` file a
+    page), and a later read of the same bytes with the same recipe takes those pages from it. A
+    read that was interrupted goes on from the pages it had finished. A file that is not a whole
+    page is read again and written over. The parser deletes no file; removing the directory is
+    the caller's job.
+    """
+
+    def __init__(self, cache: Path | str | None = None) -> None:
+        self.cache = Path(cache) if cache is not None else None
         self.recipe = ParserRecipe(
             engine="pymupdf",
             engine_version=f"{pymupdf.VersionBind} (MuPDF {pymupdf.VersionFitz})",
@@ -198,25 +265,30 @@ class PyMuPDFParser:
     def parse(self, pdf: bytes) -> RawLayer:
         """Raises `ValueError` when MuPDF cannot load part of a page: what it would read is not
         the whole page. A cross-reference table it repairs is no reason to refuse the file."""
+        store = _PageStore(self.cache, pdf, self.recipe) if self.cache is not None else None
         shown = pymupdf.TOOLS.mupdf_display_errors()
         pymupdf.TOOLS.mupdf_display_errors(False)
         pymupdf.TOOLS.reset_mupdf_warnings()
+        lost: list[str] = []
         try:
-            pages = triage(pdf)
             with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-                inputs = []
-                for page in doc:
-                    page_input = pymupdf_page_input(page)
-                    page_input.triage = pages[page_input.number - 1]
-                    inputs.append(page_input)
-            lost = [
-                w for w in pymupdf.TOOLS.mupdf_warnings().splitlines() if w.startswith("cannot")
-            ]
+                inputs = [store.get(n + 1) if store else None for n in range(doc.page_count)]
+                pages = triage(pdf) if None in inputs else ()
+                lost = _lost()
+                for index, cached in enumerate(inputs):
+                    if cached is not None or lost:
+                        continue
+                    page_input = pymupdf_page_input(doc[index])
+                    page_input.triage = pages[index]
+                    lost = _lost()
+                    if store and not lost:
+                        store.put(page_input)
+                    inputs[index] = page_input
         finally:
             pymupdf.TOOLS.mupdf_display_errors(shown)
         if lost:
             raise ValueError(f"MuPDF cannot load all of it ({lost[0]})")
-        return assemble(inputs)
+        return assemble([p for p in inputs if p is not None])
 
 
 def _pdfium_char(textpage: pypdfium2.PdfTextPage, i: int) -> str:

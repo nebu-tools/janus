@@ -16,6 +16,8 @@ The document layer underneath:
     other = janus_pdf.read("report.pdf", janus_pdf.PdfiumParser())
     janus_pdf.resolve(anchor, other)                  # the same quote in a second engine's layer
     janus_pdf.render_png(pdf_bytes, page=2, scale=2)  # a page image the boxes fit over
+    janus_pdf.page_count(pdf_bytes)                   # before deciding to read a long file
+    janus_pdf.read(pdf_bytes, janus_pdf.PyMuPDFParser(cache=directory))  # resumes when stopped
 
 `janus_pdf.document` holds the rest of the document layer: OCR, Docling, triage and comparison.
 """
@@ -45,6 +47,7 @@ from janus_pdf.document import (
     Word,
     find_quote,
     make_anchor,
+    page_count,
     read,
     render_png,
     resolve,
@@ -94,6 +97,7 @@ __all__ = [
     "inspect",
     "load_spec",
     "make_anchor",
+    "page_count",
     "parse",
     "read",
     "render_png",

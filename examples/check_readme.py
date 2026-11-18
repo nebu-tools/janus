@@ -54,6 +54,10 @@ NOT_RUN: dict[tuple[str, str], NotRun] = {
         "installs the checkout without extras and runs `janus --help` instead."
     ),
     ("README.md", "cd packages/janus"): NotRun("It is what CI runs.", in_ci=True),
+    ("README.md", "cd apps/workbench/web"): NotRun(
+        "It starts a server that runs until it is stopped. CI builds the client and runs the "
+        "Playwright tests against the real server instead."
+    ),
     ("examples/README.md", "uv run --project ../packages/janus python make_examples.py"): NotRun(
         "CI runs it and fails when a file it writes differs from the committed one.", in_ci=True
     ),

@@ -1,0 +1,387 @@
+// Write a spec and see what it extracts from the open document as you type.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { api, message } from "../api/client.ts";
+import type { DocumentRow, ExtractOut, FieldOut, PageSummary, SpecRow } from "../api/client.ts";
+import { groupFields, tally } from "../lib/fields.ts";
+import type { FieldGroup } from "../lib/fields.ts";
+import { formatValue } from "../lib/format.ts";
+import { useLiveRun } from "../lib/liveRun.ts";
+import { Editor } from "../ui/Editor.tsx";
+import { PageScroller } from "../ui/PageScroller.tsx";
+import type { PageScrollerHandle } from "../ui/PageScroller.tsx";
+import type { PageBox } from "../ui/PageView.tsx";
+
+const STARTER = `name: My spec
+fields:
+  # A label field reads the value printed after a label.
+  number: { label: "Invoice No." }
+`;
+
+const TONE: Record<FieldOut["status"], "good" | "warn" | "bad"> = {
+  extracted: "good",
+  ambiguous: "warn",
+  incomplete: "warn",
+  unconfirmed: "warn",
+  missing: "bad",
+  invalid: "bad",
+};
+const TONE_COLOR = { good: "var(--moss)", warn: "var(--marmalade)", bad: "var(--jam)" };
+
+interface Draft {
+  text: string;
+  name: string;
+  /** The text of the spec last opened or saved; null when there was none. */
+  base: string | null;
+}
+const EMPTY: Draft = { text: "", name: "", base: null };
+const NONE: readonly FieldOut[] = [];
+
+// What was typed for each document is kept in the browser's storage under the document's
+// hash, until it is saved or equals the spec it came from. Storage can be full or switched
+// off; then the text is kept only while the page is open.
+const draftKey = (document: string) => `janus.draft.${document}`;
+
+function loadDraft(document: string): Draft {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(draftKey(document)) ?? "null");
+    const { text, name, base } = (raw ?? {}) as Partial<Record<keyof Draft, unknown>>;
+    if (typeof text === "string" && typeof name === "string") {
+      return { text, name, base: typeof base === "string" ? base : null };
+    }
+  } catch {
+    // Nothing readable is kept.
+  }
+  return EMPTY;
+}
+
+function keepDraft(document: string, draft: Draft) {
+  try {
+    if (draft.text === (draft.base ?? "")) localStorage.removeItem(draftKey(document));
+    else localStorage.setItem(draftKey(document), JSON.stringify(draft));
+  } catch {
+    // The draft stays in memory only.
+  }
+}
+
+export function SpecEditor({ document }: { document: DocumentRow }) {
+  const [draft, setDraft] = useState<Draft>(() => loadDraft(document.id));
+  const [pagesFailure, setPagesFailure] = useState<string | null>(null);
+  const [pages, setPages] = useState<readonly PageSummary[]>([]);
+  const [saved, setSaved] = useState<readonly SpecRow[]>([]);
+  const [saveNote, setSaveNote] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const scroller = useRef<PageScrollerHandle>(null);
+  const results = useRef<HTMLDivElement>(null);
+
+  useEffect(() => keepDraft(document.id, draft), [document.id, draft]);
+
+  useEffect(() => {
+    api.inspect(document.id).then(
+      (inspection) => setPages(inspection.pages),
+      (e: unknown) => setPagesFailure(message(e)),
+    );
+    api.specs().then(setSaved, () => {});
+  }, [document.id]);
+
+  // An empty editor runs nothing and shows nothing. While a spec does not load, the last
+  // results stay in place, stale, under its problem.
+  const blank = draft.text.trim() === "";
+  const run = useLiveRun<string, ExtractOut>(
+    blank ? null : draft.text,
+    () => ({
+      delay: 300,
+      run: (text, signal) => api.extract(document.id, text, signal),
+      keep: (out) => !out.problem,
+    }),
+    [document.id],
+  );
+  const fields = run.shown?.output.fields ?? NONE;
+  const problem = run.answer?.problem ?? null;
+  const stale = run.stale;
+  const groups = useMemo(() => groupFields(fields), [fields]);
+  const byPath = useMemo(() => new Map(fields.map((f) => [f.path, f])), [fields]);
+
+  const select = useCallback(
+    (path: string) => {
+      setSelected(path);
+      const field = byPath.get(path);
+      const box = field?.boxes?.[0] ?? field?.candidates?.[0]?.boxes[0];
+      if (box) scroller.current?.show(box.page, box.y0);
+    },
+    [byPath],
+  );
+
+  const pickBox = useCallback((path: string) => {
+    setSelected(path);
+    const row = results.current?.querySelector(`[data-path="${CSS.escape(path)}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  const parents = useMemo(
+    () => new Set(groups.filter((g) => g.records.length > 0).map((g) => g.field.path)),
+    [groups],
+  );
+  const boxes = useCallback(
+    (page: number): PageBox[] => {
+      const list: PageBox[] = [];
+      for (const field of fields) {
+        const mine = field.path === selected;
+        // A records field covers its cells, so it is drawn only when it is the one selected.
+        if (parents.has(field.path) && !mine) continue;
+        const what = `${field.path}: ${formatValue(field.value) || field.status}`;
+        const label = stale ? `${what}, for the earlier text` : what;
+        const color = TONE_COLOR[TONE[field.status]];
+        for (const box of field.boxes ?? []) {
+          if (box.page !== page) continue;
+          const look = mine ? "strong" : field.path === hovered ? "wash" : "outline";
+          list.push({ id: field.path, ...box, color, label, look, old: stale });
+        }
+        if (!mine) continue;
+        for (const candidate of field.candidates ?? []) {
+          for (const box of candidate.boxes) {
+            if (box.page !== page) continue;
+            const place = `${field.path}, one of the places: ${candidate.printed}`;
+            const text = stale ? `${place}, for the earlier text` : place;
+            list.push({
+              id: field.path,
+              ...box,
+              color: TONE_COLOR.warn,
+              label: text,
+              look: "wash",
+              old: stale,
+            });
+          }
+        }
+      }
+      return list;
+    },
+    [fields, parents, selected, hovered, stale],
+  );
+
+  const image = useCallback((page: number) => api.pageImage(document.id, page), [document.id]);
+
+  const save = async () => {
+    const name = draft.name.trim();
+    if (name === "") {
+      setSaveNote("Give the spec a name first.");
+      return;
+    }
+    try {
+      const text = draft.text;
+      await api.saveSpec(name, text);
+      setDraft((d) => ({ ...d, base: text }));
+      setSaved(await api.specs());
+      setSaveNote(`Saved as ${name}`);
+    } catch (e) {
+      setSaveNote(`Not saved: ${message(e)}`);
+    }
+  };
+
+  const open = async (name: string) => {
+    try {
+      const spec = await api.spec(name);
+      setDraft({ text: spec.text, name: spec.name, base: spec.text });
+      setSelected(null);
+      setSaveNote("");
+    } catch (e) {
+      setSaveNote(`Not opened: ${message(e)}`);
+    }
+  };
+
+  return (
+    <div className="spec">
+      <section
+        className="spec-edit"
+        aria-label="Spec"
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+            event.preventDefault();
+            void save();
+          }
+        }}
+      >
+        <div className="spec-tools">
+          <input
+            className="field"
+            aria-label="Spec name"
+            placeholder="Spec name"
+            maxLength={80}
+            value={draft.name}
+            onChange={(event) => {
+              const name = event.currentTarget.value;
+              setDraft((d) => ({ ...d, name }));
+            }}
+          />
+          <button type="button" className="button primary" onClick={() => void save()}>
+            Save
+          </button>
+          <select
+            className="field"
+            aria-label="Open a saved spec"
+            value=""
+            disabled={saved.length === 0}
+            onChange={(event) => void open(event.currentTarget.value)}
+          >
+            <option value="">{saved.length === 0 ? "No saved specs" : "Open a saved spec"}</option>
+            {saved.map((spec) => (
+              <option key={spec.name} value={spec.name}>
+                {spec.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Editor
+          value={draft.text}
+          onChange={(text) => setDraft((d) => (d.text === text ? d : { ...d, text }))}
+          problem={problem ? { message: problem.message, line: problem.line ?? null } : null}
+          label="Spec, in YAML"
+          placeholder="name: My spec"
+        />
+        <p className="quiet spec-foot" role="status">
+          {saveNote || "Tab indents. Press Escape, then Tab, to leave the editor."}
+        </p>
+      </section>
+
+      <section className="spec-results" aria-label="Results" ref={results}>
+        <div className="results-head">
+          <h2>Results</h2>
+          <span className="quiet" role="status">
+            {[
+              run.pending ? "Running." : "",
+              stale ? "These results are for the earlier text." : "",
+              !run.pending && !stale && groups.length > 0 ? tally(groups) : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          </span>
+        </div>
+        {pagesFailure !== null ? (
+          <p className="notice" role="alert">
+            The pages could not be loaded: {pagesFailure}
+          </p>
+        ) : null}
+        {run.error !== null ? (
+          <p className="notice" role="alert" data-testid="run-failure">
+            The spec could not be run: {run.error.message}
+          </p>
+        ) : null}
+        {problem ? (
+          <p className="notice" role="alert" data-testid="spec-problem">
+            {problem.line ? `Line ${problem.line}: ` : ""}
+            {problem.message}
+          </p>
+        ) : null}
+        {blank ? (
+          <div className="empty results-empty">
+            <p>
+              Write a spec on the left. Each field it names appears here with its status and value,
+              shortly after you stop typing.
+            </p>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setDraft((d) => ({ ...d, text: STARTER }))}
+            >
+              Insert a starting spec
+            </button>
+          </div>
+        ) : (
+          <ul className="fields" data-stale={stale}>
+            {groups.map((group) => (
+              <FieldItem
+                key={group.field.path}
+                group={group}
+                selected={selected}
+                onSelect={select}
+                onHover={setHovered}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <PageScroller ref={scroller} pages={pages} image={image} boxes={boxes} onBoxClick={pickBox} />
+    </div>
+  );
+}
+
+interface ItemProps {
+  group: FieldGroup;
+  selected: string | null;
+  onSelect: (path: string) => void;
+  onHover: (path: string | null) => void;
+}
+
+function FieldItem({ group, selected, onSelect, onHover }: ItemProps) {
+  const { field, columns, records } = group;
+  const value = formatValue(field.value);
+  return (
+    <li className="fielditem">
+      <button
+        type="button"
+        className="fieldrow"
+        data-path={field.path}
+        aria-pressed={selected === field.path}
+        onClick={() => onSelect(field.path)}
+        onPointerEnter={() => onHover(field.path)}
+        onPointerLeave={() => onHover(null)}
+      >
+        <span className="fieldrow-top">
+          <span className="fieldname">{field.path}</span>
+          <span className="tag" data-tone={TONE[field.status]}>
+            {field.status}
+          </span>
+        </span>
+        {value !== "" ? <span className="fieldvalue">{value}</span> : null}
+        {field.message ? <span className="fieldmessage">{field.message}</span> : null}
+        {(field.suggestions ?? []).map((suggestion) => (
+          <span key={suggestion} className="fieldmessage">
+            Close to it: {suggestion}
+          </span>
+        ))}
+      </button>
+      {records.length > 0 ? (
+        <div className="records-wrap">
+          <table className="records">
+            <thead>
+              <tr>
+                {columns.map((column) => (
+                  <th key={column} scope="col">
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((cells, r) => (
+                <tr key={r}>
+                  {cells.map((cell, c) => (
+                    <td key={columns[c]}>
+                      {cell ? (
+                        <button
+                          type="button"
+                          className="cellbutton"
+                          data-path={cell.path}
+                          data-tone={TONE[cell.status]}
+                          aria-pressed={selected === cell.path}
+                          title={
+                            cell.status === "extracted" ? undefined : cell.message || cell.status
+                          }
+                          onClick={() => onSelect(cell.path)}
+                        >
+                          {formatValue(cell.value) || cell.printed || cell.status}
+                        </button>
+                      ) : null}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </li>
+  );
+}

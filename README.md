@@ -16,7 +16,7 @@ its type, Janus gives no value and says why.
 | --- | --- |
 | The library `janus_pdf` | Works. It reads PDFs that have a text layer, extracts by spec and compares with reference data. |
 | The command `janus` | Works: `inspect`, `extract` and `compare`. |
-| The workbench, a web app for writing specs against the page | Being rebuilt. Nothing of it is in this repository yet. |
+| The workbench, a web app for writing specs against the page | Works for one document at a time: Documents, Inspect and the spec editor. See [Workbench](#workbench) for what it lacks. |
 | PyPI | Not published. Install from this repository. |
 
 Scanned pages need `ocrmypdf` installed, and tables without rules in complex layouts need the
@@ -86,12 +86,49 @@ match         total/currency                 expected "GBP", got "GBP"
 [examples](examples/README.md) has two more documents, one of them a table that runs over three
 pages, and shows `inspect`.
 
+## Workbench
+
+The workbench is a web app that runs on your own machine. It has three screens:
+
+- Documents takes the PDFs you drop on it, reads them and lists each with its pages, tables,
+  engine and read time.
+- Inspect shows the pages with the words, lines, headings and tables Janus read drawn on them.
+  A search box lists every place a phrase is printed and whether it begins its line or cell.
+- The spec editor runs the spec against the open document as you type. Each field shows its
+  status, value and message, and its boxes are drawn on the page.
+
+Start it from a clone of this repository. It needs [uv](https://docs.astral.sh/uv/), Node 26
+and [pnpm](https://pnpm.io/):
+
+```sh
+cd apps/workbench/web
+pnpm install
+pnpm build                      # writes the client into the server package
+cd ../server
+uv run janus-workbench serve    # http://127.0.0.1:8440
+```
+
+The server listens on 127.0.0.1 and has no sign-in, so anyone who can reach its address can read
+and delete every document. `--host` takes another loopback address, or a name whose every
+address is loopback. Any other address needs `--listen-without-auth`.
+
+Documents, page images and saved specs are files under `JANUS_DATA_DIR`, by default
+`~/.local/share/janus-workbench`. `JANUS_MAX_UPLOAD_MB` (200), `JANUS_MAX_PAGES` (2000) and
+`JANUS_READ_DEADLINE` (600 seconds) limit what one upload may cost.
+
+The workbench does not have these yet:
+
+- Click to locate: click a word on the page and get locators proposed for it.
+- Runs: one spec over many documents.
+- Compare: checking an extraction against reference data. The command `janus compare` does it.
+- OCR and Docling. It reads every document with PyMuPDF, so a scanned page shows no words.
+
 ## Reference
 
 - [packages/janus/README.md](packages/janus/README.md): the spec format, the locators, the value
   types, the command and the library.
 - [DESIGN.md](DESIGN.md): how Janus reads a page, the rule a value must meet to count as
-  extracted, and the plan for the workbench.
+  extracted, and how the workbench is built.
 
 ## Development
 
@@ -116,6 +153,20 @@ uvx --isolated --from ./packages/janus janus --help   # a clean install without 
 cd examples
 uv run --project ../packages/janus python make_examples.py
 git status --porcelain .   # empty when the committed examples are what the script writes
+
+cd ../apps/workbench/server
+uv sync --locked
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run ty check src tests
+uv run pytest
+
+cd ../web
+pnpm install --frozen-lockfile
+pnpm check        # format, lint, types, unit tests, build
+pnpm generate && git diff --exit-code -- src/api   # the API types match the server
+pnpm exec playwright install --with-deps chromium
+pnpm e2e          # the three screens in a browser, against the real server
 ```
 
 `examples/check_readme.py` runs the commands this README and the examples README show. It fails

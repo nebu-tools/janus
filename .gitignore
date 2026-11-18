@@ -39,3 +39,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# The workbench client, built into the server package
+apps/workbench/server/src/janus_workbench/static/
