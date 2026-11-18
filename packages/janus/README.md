@@ -181,7 +181,8 @@ janus_pdf.compare(extraction, {"total": {"amount": "627.00"}})
 
 `janus_pdf.page_count("invoice.pdf")` gives the number of pages without reading them.
 `janus_pdf.PyMuPDFParser(cache=directory)` writes each page to the directory as it is read, so a
-read that was stopped goes on where it stopped. A `SpecError` raised for a spec given as text has
+read that was stopped goes on where it stopped. A page is taken from the directory only for the
+same bytes and the same parser recipe. The parser deletes nothing there. A `SpecError` raised for a spec given as text has
 a `line`, counted from 1, when the error belongs to one line.
 
 Each field gets one status:

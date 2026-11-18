@@ -115,17 +115,20 @@ checks = janus_pdf.compare(ex, reference, rules={})                        # com
   refuse a long file first.
 - `PyMuPDFParser(cache=directory)` writes each page into the directory as it is read. A read
   that was stopped starts again at the first page not yet written, and the layer is the same as
-  one read in a single pass. The directory belongs to one document. Counting its files gives the
-  progress of a read.
+  one read in a single pass. A page's file is named by the SHA-256 of the document's SHA-256 and
+  the parser's recipe, so it is never taken for other bytes or another recipe. Each file is
+  written under a name of its own and then moved into place, so two processes that write the
+  same page leave one whole file. A file that is not a whole page is read again and written
+  over. The parser deletes no file; removing the directory is the caller's job.
 - A `SpecError` has a `line`, counted from 1, when the spec was given as text and the error
   belongs to one line. An editor marks the error there.
 - An `Inspection` gives each page's size in points and each heading's box, so that a caller can
   lay pages out before any image loads and draw headings on them.
 
-The library writes no files, starts no threads and keeps no global state, except caches of the
-most recent layer's lookups and index. Each cache is one immutable value replaced in a single
-assignment, so threads that read different layers at worst rebuild it. It needs no reference
-data and no server.
+The library writes no files except into a page cache it is given. It starts no threads and keeps
+no global state, except caches of the most recent layer's lookups and index. Each cache is one
+immutable value replaced in a single assignment, so threads that read different layers at worst
+rebuild it. It needs no reference data and no server.
 
 ## The document model
 

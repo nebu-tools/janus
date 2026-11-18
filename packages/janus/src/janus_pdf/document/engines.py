@@ -7,6 +7,8 @@ Both read words in the unrotated page, turn them into the page's reading frame a
 import ctypes
 import hashlib
 import math
+import os
+import tempfile
 from functools import cache
 from pathlib import Path
 from typing import NamedTuple
@@ -188,36 +190,49 @@ _PAGE_INPUT = TypeAdapter(PageInput)
 
 
 class _PageStore:
-    """One document's pages as one recipe read them, a file each, in a directory of their own.
+    """One document's pages as one recipe read them, a file each.
 
-    A file is named by a hash of the document and the recipe, then the page number. Files left
-    by another document or recipe are deleted, so the files present are the pages read so far.
+    A file is named by `key` and the page number. The key is the SHA-256 of the document's own
+    SHA-256 followed by the recipe's canonical JSON, so a file is never taken for other bytes or
+    another recipe. Files with other names are left alone: this class deletes nothing.
     """
 
     def __init__(self, directory: Path, pdf: bytes, recipe: ParserRecipe) -> None:
         self.directory = directory
-        key = hashlib.sha256(pdf)
-        key.update(canonical_json(recipe.model_dump(mode="json")))
-        self.prefix = key.hexdigest()[:32]
+        self.key = page_cache_key(pdf, recipe)
         directory.mkdir(parents=True, exist_ok=True)
-        for path in directory.iterdir():
-            if not path.name.startswith(self.prefix + "-"):
-                path.unlink()
 
     def _path(self, number: int) -> Path:
-        return self.directory / f"{self.prefix}-{number:06d}.json"
+        return self.directory / f"{self.key}-{number:06d}.json"
 
     def get(self, number: int) -> PageInput | None:
+        """The page, or None when it is not there or its file is not a whole page."""
         try:
-            return _PAGE_INPUT.validate_json(self._path(number).read_bytes())
+            page = _PAGE_INPUT.validate_json(self._path(number).read_bytes())
         except (OSError, ValidationError):
-            return None  # not read yet, or a file that is not whole
+            return None
+        return page if page.number == number else None
 
     def put(self, page: PageInput) -> None:
-        path = self._path(page.number)
-        partial = path.with_suffix(".part")
-        partial.write_bytes(_PAGE_INPUT.dump_json(page))
-        partial.replace(path)
+        """Write the page to a file of its own, then move it into place in one step. Two writers
+        of the same page each use their own file, and the last move wins with a whole page."""
+        fd, partial = tempfile.mkstemp(dir=self.directory, prefix=f".{self.key}-", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(_PAGE_INPUT.dump_json(page))
+            Path(partial).replace(self._path(page.number))
+        except BaseException:
+            Path(partial).unlink(missing_ok=True)
+            raise
+
+
+def page_cache_key(pdf: bytes, recipe: ParserRecipe) -> str:
+    """What names a document's pages in a page cache: other bytes or another recipe give
+    another key."""
+    key = hashlib.sha256(b"janus.page-cache.v1\x00")
+    key.update(hashlib.sha256(pdf).digest())
+    key.update(canonical_json(recipe.model_dump(mode="json")))
+    return key.hexdigest()
 
 
 def _lost() -> list[str]:
@@ -227,9 +242,11 @@ def _lost() -> list[str]:
 class PyMuPDFParser:
     """The base layer: PyMuPDF characters, Janus's reading order and table grids.
 
-    With `cache`, a directory kept for one document, each page is written there as it is read
-    (one `.json` file a page), and a later read of the same document takes those pages from it.
-    A read that was interrupted goes on from the pages it had finished.
+    With `cache`, a directory, each page is written there as it is read (one `.json` file a
+    page), and a later read of the same bytes with the same recipe takes those pages from it. A
+    read that was interrupted goes on from the pages it had finished. A file that is not a whole
+    page is read again and written over. The parser deletes no file; removing the directory is
+    the caller's job.
     """
 
     def __init__(self, cache: Path | str | None = None) -> None:
