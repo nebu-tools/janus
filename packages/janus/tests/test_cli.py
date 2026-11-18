@@ -41,6 +41,19 @@ def test_compare_exits_by_whether_every_check_matched(tmp_path, capsys):
     assert "mismatch" in capsys.readouterr().out
 
 
+def test_no_line_of_text_output_ends_in_a_space(tmp_path, capsys):
+    spec = tmp_path / "invoice.yaml"
+    spec.write_text(SPEC + "  po: {label: PO number}\n")
+    reference = tmp_path / "reference.json"
+    reference.write_text(json.dumps({"number": "INV-1", "total": {"currency": "GBP"}}))
+    main(["extract", str(spec), str(INVOICE)])
+    main(["compare", str(spec), str(INVOICE), str(reference)])
+    main(["inspect", str(INSPECTION), "--find", "Findings"])
+    out = capsys.readouterr().out
+    assert "match " in out and "missing" in out
+    assert [line for line in out.splitlines() if line != line.rstrip()] == []
+
+
 def test_bad_input_exits_2(tmp_path, capsys):
     spec = tmp_path / "bad.yaml"
     spec.write_text("fields: {x: {label: X, colum: Y}}\n")
