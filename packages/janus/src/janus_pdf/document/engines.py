@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import tempfile
+import time
 from functools import cache
 from pathlib import Path
 from typing import NamedTuple
@@ -194,13 +195,31 @@ class _PageStore:
 
     A file is named by `key` and the page number. The key is the SHA-256 of the document's own
     SHA-256 followed by the recipe's canonical JSON, so a file is never taken for other bytes or
-    another recipe. Files with other names are left alone: this class deletes nothing.
+    another recipe.
+
+    A writer that is killed in the middle of a write leaves the file it was writing, a `.part`
+    file named by the key. The first write through this object deletes the `.part` files of its
+    own key that are older than `STALE_PART` seconds. A younger one may belong to a writer that
+    is still at work. Every other file is left alone.
     """
+
+    STALE_PART = 600.0
 
     def __init__(self, directory: Path, pdf: bytes, recipe: ParserRecipe) -> None:
         self.directory = directory
         self.key = page_cache_key(pdf, recipe)
+        self._swept = False
         directory.mkdir(parents=True, exist_ok=True)
+
+    def _sweep(self) -> None:
+        self._swept = True
+        oldest = time.time() - self.STALE_PART
+        for partial in self.directory.glob(f".{self.key}-*.part"):
+            try:
+                if partial.stat().st_mtime < oldest:
+                    partial.unlink()
+            except OSError:
+                pass  # another writer took it first
 
     def _path(self, number: int) -> Path:
         return self.directory / f"{self.key}-{number:06d}.json"
@@ -216,6 +235,8 @@ class _PageStore:
     def put(self, page: PageInput) -> None:
         """Write the page to a file of its own, then move it into place in one step. Two writers
         of the same page each use their own file, and the last move wins with a whole page."""
+        if not self._swept:
+            self._sweep()
         fd, partial = tempfile.mkstemp(dir=self.directory, prefix=f".{self.key}-", suffix=".part")
         try:
             with os.fdopen(fd, "wb") as out:
@@ -245,8 +266,9 @@ class PyMuPDFParser:
     With `cache`, a directory, each page is written there as it is read (one `.json` file a
     page), and a later read of the same bytes with the same recipe takes those pages from it. A
     read that was interrupted goes on from the pages it had finished. A file that is not a whole
-    page is read again and written over. The parser deletes no file; removing the directory is
-    the caller's job.
+    page is read again and written over. A writer that was killed leaves a `.part` file; the
+    next read of the same bytes with the same recipe deletes those older than ten minutes. The
+    parser deletes nothing else; removing the directory is the caller's job.
     """
 
     def __init__(self, cache: Path | str | None = None) -> None:

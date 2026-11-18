@@ -336,6 +336,18 @@ def test_a_start_deletes_the_page_cache_of_every_document_not_waiting_to_be_read
     assert [store.page_cache(d).exists() for d in (ready, failed, queued)] == [False, False, True]
 
 
+def test_the_end_of_a_read_takes_the_parts_a_killed_writer_left(settings):
+    store = Store(settings.data_dir)
+    done, broken = (keep(store, INVOICE.read_bytes() + bytes([n])) for n in range(2))
+    for document in (done, broken):
+        store.page_cache(document).mkdir()
+        (store.page_cache(document) / f".{'0' * 64}-abc.part").write_bytes(b"half a page")
+    store.finish(done, status="ready")
+    store.finish(broken, status="failed", error="no")
+    assert not store.page_cache(done).exists()
+    assert not store.page_cache(broken).exists()
+
+
 class FakeJobs:
     """Reads that take no time, except that each waits for `gate`. Records what it read."""
 
