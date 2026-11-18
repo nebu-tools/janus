@@ -54,6 +54,7 @@ packages/janus/                 distribution janus-pdf, import name janus_pdf
   scripts/benchmark.py          timings on a generated 100-page document
 examples/                       three invented PDFs, each with a spec and reference data
   make_examples.py              builds the PDFs and their reference data from the same values
+  fonts/                        Liberation Sans, so the PDFs are the same on any machine
   check_readme.py               runs the commands a README shows and compares their output
   test_check_readme.py          the checker's tests
 assets/branding/                the logo

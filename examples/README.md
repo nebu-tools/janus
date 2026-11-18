@@ -127,5 +127,6 @@ uv run --project ../packages/janus python make_examples.py
 ```
 
 The script writes the three PDFs and their reference data from the same values, so `compare`
-checks each extraction against data that never passed through Janus. It needs the Liberation
-Sans fonts. Its output is committed, and CI fails when the script writes something else.
+checks each extraction against data that never passed through Janus. The fonts it sets the text
+in are in [fonts](fonts), so it writes the same bytes on any machine. Its output is committed,
+and CI fails when the script writes something else.

@@ -2,9 +2,9 @@
 
     uv run --project packages/janus python examples/make_examples.py
 
-Every document is invented. Text is set in Liberation Sans (SIL Open Font License 1.1), embedded
-and subset. The script looks for the fonts in the usual Linux places or in $JANUS_FONT_DIR. The
-output is the same on every run for a given PyMuPDF: fixed metadata, no timestamps, no random IDs.
+Every document is invented. Text is set in Liberation Sans (SIL Open Font License 1.1, see
+fonts/LICENSE), embedded and subset. The fonts are committed beside this script, so the output is
+the same on every machine for a given PyMuPDF: fixed metadata, no timestamps, no random IDs.
 
 Each document is drawn from typed values: dates, decimal amounts and counts. The same values
 give each example's reference.json, so `janus compare` checks the extraction against data that
@@ -12,8 +12,6 @@ never passed through Janus. Nothing here reads a PDF.
 """
 
 import json
-import os
-import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -21,24 +19,13 @@ from pathlib import Path
 import pymupdf
 
 HERE = Path(__file__).parent
-FONT_DIRS = (
-    os.environ.get("JANUS_FONT_DIR", ""),
-    "/usr/share/fonts/liberation",
-    "/usr/share/fonts/truetype/liberation",
-    "/usr/share/fonts/liberation-sans",
-    "/usr/share/fonts/TTF",
-)
+FONTS = {
+    False: HERE / "fonts" / "LiberationSans-Regular.ttf",
+    True: HERE / "fonts" / "LiberationSans-Bold.ttf",
+}
 WIDTH, HEIGHT = 595.0, 842.0  # A4
 LEFT, RIGHT = 56.0, WIDTH - 56.0
 BODY, LEADING, ROW = 9.5, 12.5, 16.0
-
-
-def _font(name: str) -> str:
-    for directory in FONT_DIRS:
-        path = Path(directory) / name
-        if directory and path.is_file():
-            return str(path)
-    sys.exit(f"{name} not found; install Liberation Sans or set JANUS_FONT_DIR")
 
 
 class Sheet:
@@ -46,17 +33,13 @@ class Sheet:
 
     def __init__(self) -> None:
         self.doc = pymupdf.open()
-        self.files = {
-            False: _font("LiberationSans-Regular.ttf"),
-            True: _font("LiberationSans-Bold.ttf"),
-        }
-        self.fonts = {bold: pymupdf.Font(fontfile=file) for bold, file in self.files.items()}
+        self.fonts = {bold: pymupdf.Font(fontfile=str(file)) for bold, file in FONTS.items()}
         self.page: pymupdf.Page
 
     def new_page(self) -> None:
         self.page = self.doc.new_page(width=WIDTH, height=HEIGHT)
-        for bold, file in self.files.items():
-            self.page.insert_font(fontname="F2" if bold else "F1", fontfile=file)
+        for bold, file in FONTS.items():
+            self.page.insert_font(fontname="F2" if bold else "F1", fontfile=str(file))
 
     def text(self, x: float, y: float, text: str, size: float = BODY, bold: bool = False) -> None:
         self.page.insert_text((x, y), text, fontname="F2" if bold else "F1", fontsize=size)
