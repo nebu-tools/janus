@@ -69,31 +69,60 @@ def test_the_same_file_sent_again_stays_one_row_in_its_place(client, read):
 
 
 def test_two_uploads_of_the_same_file_at_once_make_one_row(settings, monkeypatch):
-    # Both requests reach the store before either is done with it.
-    both = threading.Barrier(2, timeout=30)
-    add = Store.add
+    """The first upload stops in the middle of `Store.add`, after it took its order key and
+    before its row exists. The second must wait for it. Without the lock it would find no row,
+    take a second key and write a second row."""
+    store = Store(settings.data_dir)
+    data = INVOICE.read_bytes()
+    document = hashlib.sha256(data).hexdigest()
+    inside, waiting, go = threading.Semaphore(0), threading.Event(), threading.Event()
+    write = store_module._write
 
-    def add_together(self, *args):
-        both.wait()
-        return add(self, *args)
+    def write_slowly(path, content):
+        if path.name == "order":
+            inside.release()
+            assert go.wait(30)
+        write(path, content)
 
-    monkeypatch.setattr(Store, "add", add_together)
-    answers = []
-    with live(settings) as address:
+    class Watched:
+        """The store's lock; it says when someone has to wait for it."""
 
-        def send():
-            answers.append(post(address, INVOICE.read_bytes()))
+        def __init__(self, lock) -> None:
+            self.lock = lock
 
-        threads = [threading.Thread(target=send) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-    assert [status for status, _ in answers] == [201, 201]
-    assert answers[0][1]["id"] == answers[1][1]["id"]
-    documents = settings.data_dir / "documents"
-    assert [d.name for d in documents.iterdir()] == [answers[0][1]["id"]]
-    assert list((settings.data_dir / "incoming").iterdir()) == []
+        def __enter__(self):
+            if not self.lock.acquire(blocking=False):
+                waiting.set()
+                self.lock.acquire()
+
+        def __exit__(self, *_):
+            self.lock.release()
+
+    monkeypatch.setattr(store_module, "_write", write_slowly)
+    monkeypatch.setattr(store, "_lock", Watched(store._lock))
+    rows = []
+
+    def send(name: str) -> None:
+        upload = store.incoming / name
+        upload.write_bytes(data)
+        rows.append(store.add(upload, document, name, len(data)))
+
+    first = threading.Thread(target=send, args=("first.pdf",))
+    first.start()
+    assert inside.acquire(timeout=30)
+    second = threading.Thread(target=send, args=("second.pdf",))
+    second.start()
+    # The second upload either waits for the lock, or it is inside `add` beside the first.
+    wait_until(lambda: waiting.is_set() or inside.acquire(blocking=False), "at the lock")
+    alone = waiting.is_set()
+    go.set()
+    first.join()
+    second.join()
+    assert alone, "two uploads were inside Store.add at once"
+    assert [(row.order, row.name) for row in rows] == [(0, "first.pdf")] * 2
+    assert (settings.data_dir / "order").read_text() == "1"
+    assert [d.name for d in store.documents.iterdir()] == [document]
+    assert list(store.incoming.iterdir()) == []
 
 
 def post(address: tuple[str, int], body: bytes, name: str = "document.pdf") -> tuple[int, dict]:

@@ -14,6 +14,7 @@ from conftest import INVOICE, serve, upload
 from janus_workbench import cli
 from janus_workbench.app import create_app
 from janus_workbench.jobs import JobCancelled, JobFailed, Jobs
+from janus_workbench.store import Store
 
 
 def test_a_job_gives_its_result():
@@ -179,6 +180,43 @@ def test_every_answer_may_be_used_only_by_the_workbench_s_own_pages(client):
     for answer in answers:
         assert answer.headers["cross-origin-resource-policy"] == "same-origin", answer.url
         assert answer.headers["x-content-type-options"] == "nosniff", answer.url
+
+
+def safe(answer) -> bool:
+    return (
+        answer.headers.get("cross-origin-resource-policy") == "same-origin"
+        and answer.headers.get("x-content-type-options") == "nosniff"
+    )
+
+
+def test_an_unhandled_error_is_answered_500_with_the_same_headers(settings, monkeypatch):
+    def broken(_):
+        raise OSError("the disk failed")
+
+    monkeypatch.setattr(Store, "rows", broken)
+    app = create_app(settings, static=None)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+        answer = client.get("/api/documents")
+        assert answer.status_code == 500 and safe(answer), dict(answer.headers)
+        assert "disk" not in answer.text
+        refused = client.get("/api/documents", headers=FOREIGN)
+        assert refused.status_code == 403 and safe(refused)
+
+
+def test_a_client_file_and_an_unknown_path_carry_the_headers(settings, tmp_path):
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<title>Janus</title>")
+    (static / "assets" / "app-1a2b.js").write_text("console.log(1)")
+    with TestClient(create_app(settings, static=static), base_url="http://127.0.0.1") as client:
+        script = client.get("/assets/app-1a2b.js")
+        assert script.status_code == 200 and safe(script)
+        page = client.get("/nothing/here")  # the page fallback
+        assert page.status_code == 200 and safe(page)
+        unknown = client.get("/api/nothing/here")
+        assert unknown.status_code == 404 and safe(unknown)
+        wrong = client.post("/api/specs")
+        assert wrong.status_code == 405 and safe(wrong)
 
 
 def test_the_client_is_served_from_a_list_of_its_own_files(settings, tmp_path):

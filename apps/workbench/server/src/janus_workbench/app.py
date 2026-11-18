@@ -125,9 +125,12 @@ def shown_name(name: str) -> str:
 
 
 class _SameOrigin:
-    """Refuse a request whose `Origin` is not the server's own, and add `SAFE_HEADERS` to every
-    response. A browser sends `Origin` with every request a page on another site makes that
-    could change something, so such a request ends here."""
+    """The outermost layer, around the whole application and its answer to an unhandled error.
+
+    It refuses a request whose `Origin` is not the server's own: a browser sends `Origin` with
+    every request a page on another site makes that could change something, so such a request
+    ends here. It adds `SAFE_HEADERS` to every response that passes through it, and every
+    response does."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -136,22 +139,20 @@ class _SameOrigin:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        headers = Headers(scope=scope)
-        origin = headers.get("origin")
-        if origin is not None and origin != f"{scope['scheme']}://{headers.get('host', '')}":
-            refused = JSONResponse(
-                {"detail": "the workbench answers only its own pages"},
-                status_code=403,
-                headers=SAFE_HEADERS,
-            )
-            await refused(scope, receive, send)
-            return
 
         async def send_safe(message: Message) -> None:
             if message["type"] == "http.response.start":
                 MutableHeaders(scope=message).update(SAFE_HEADERS)
             await send(message)
 
+        headers = Headers(scope=scope)
+        origin = headers.get("origin")
+        if origin is not None and origin != f"{scope['scheme']}://{headers.get('host', '')}":
+            refused = JSONResponse(
+                {"detail": "the workbench answers only its own pages"}, status_code=403
+            )
+            await refused(scope, receive, send_safe)
+            return
         await self.app(scope, receive, send_safe)
 
 
@@ -170,10 +171,20 @@ def create_app(
     *,
     static: Path | None = STATIC,
     hosts: tuple[str, ...] | None = LOOPBACK_HOSTS,
-    start: bool = True,
-) -> FastAPI:
-    """The workbench app. A request must name one of `hosts` in its `Host` header; None allows
-    any. `start=False` builds it without touching the disk, for `openapi`."""
+) -> ASGIApp:
+    """The workbench as it is served: the API and the client behind the two checks every
+    request passes. A request must name one of `hosts` in its `Host` header; None allows any."""
+    app: ASGIApp = api(settings, static=static)
+    if hosts is not None:
+        # A page on another site cannot reach the API by pointing a name of its own at 127.0.0.1.
+        app = TrustedHostMiddleware(app, allowed_hosts=list(hosts))
+    # Outside everything, also outside the layer that answers 500 to an unhandled error.
+    return _SameOrigin(app)
+
+
+def api(settings: Settings, *, static: Path | None = STATIC, start: bool = True) -> FastAPI:
+    """The endpoints and the client's files, without the checks of `create_app`.
+    `start=False` builds it without touching the disk, for `openapi`."""
     store: Store
     reader: Reader
     jobs = Jobs()
@@ -197,10 +208,6 @@ def create_app(
         lifespan=lifespan if start else None,
         generate_unique_id_function=lambda route: route.name,
     )
-    if hosts is not None:
-        # A page on another site cannot reach the API by pointing a name of its own at 127.0.0.1.
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
-    app.add_middleware(_SameOrigin)  # added last, so it runs first and covers every response
 
     @app.exception_handler(Unknown)
     async def unknown(_: Request, exc: Unknown) -> Response:

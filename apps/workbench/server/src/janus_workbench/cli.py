@@ -52,12 +52,12 @@ def main(argv: list[str] | None = None, *, resolve: Resolve = socket.getaddrinfo
     commands.add_parser("openapi", help="print the OpenAPI document")
     args = parser.parse_args(argv)
 
-    from janus_workbench.app import LOOPBACK_HOSTS, create_app
+    from janus_workbench.app import LOOPBACK_HOSTS, api, create_app
     from janus_workbench.settings import Settings
 
     if args.command == "openapi":
-        app = create_app(Settings.from_env(), start=False)
-        print(json.dumps(app.openapi(), indent=2, sort_keys=True))
+        described = api(Settings.from_env(), start=False)
+        print(json.dumps(described.openapi(), indent=2, sort_keys=True))
         return 0
 
     # Resolved once: the check and the bind use the same address, so a name cannot change
