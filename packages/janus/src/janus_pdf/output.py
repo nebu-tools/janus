@@ -58,7 +58,7 @@ def extraction_text(ex: Extraction, cells: bool = False) -> str:
         counts[r.status] = counts.get(r.status, 0) + 1
     summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
     lines.append(summary)
-    return "\n".join(lines)
+    return _join(lines)
 
 
 def checks_text(checks: tuple[Check, ...]) -> str:
@@ -72,7 +72,7 @@ def checks_text(checks: tuple[Check, ...]) -> str:
     for c in checks:
         counts[c.status] = counts.get(c.status, 0) + 1
     lines.append(", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
-    return "\n".join(lines)
+    return _join(lines)
 
 
 def inspection_text(ins: Inspection) -> str:
@@ -96,4 +96,9 @@ def inspection_text(ins: Inspection) -> str:
             where = h.cell or f"({h.box.x0:.0f}, {h.box.y0:.0f})"
             label = "label ok" if h.starts_line else "mid-line"
             out.append(f"  p{h.page:<3} {where:<14} {label:<9} {h.text[:80]}")
-    return "\n".join(out)
+    return _join(out)
+
+
+def _join(lines: list[str]) -> str:
+    """The lines as one text. Padding for columns never leaves spaces at the end of a line."""
+    return "\n".join(line.rstrip() for line in lines)

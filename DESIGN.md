@@ -67,8 +67,10 @@ apps/workbench/
     src/screens/                Documents, Inspect, SpecEditor
     e2e/                        Playwright tests against the real server
 examples/                       three invented PDFs, each with a spec and reference data
-  make_examples.py              builds the PDFs
+  make_examples.py              builds the PDFs and their reference data from the same values
+  fonts/                        Liberation Sans, so the PDFs are the same on any machine
   check_readme.py               runs the commands a README shows and compares their output
+  test_check_readme.py          the checker's tests
 assets/branding/                the logo
 ```
 
@@ -185,7 +187,7 @@ from different engines never share a hash.
 PyMuPDF gives each span's size and flags. PDFium gives each character's `Tf` size, which Janus
 scales by the character's text matrix, because many producers set `Tf 1` and scale with the
 matrix. Bold comes from the font weight, the ForceBold flag or the font name, in that order, as
-PyMuPDF decides it. On the test report and on a 10-page journal article the two engines agree on
+PyMuPDF decides it. On the test report and on a 10-page article the two engines agree on
 every heading's size and weight.
 
 `ASSEMBLY_VERSION` names the layout algorithm and is part of every recipe. Bump it when layout
@@ -482,7 +484,7 @@ strings. Other rules:
   from the declared one is an error.
 - A number may carry a sign: a hyphen-minus, the minus sign U+2212 or a plus. A number in
   parentheses, such as `(123)` or `(£40.00)`, is negative, and the result says so in a note.
-- `percent` is a share: a number from 0 to 100, as in "41.1% of patients".
+- `percent` is a share: a number from 0 to 100, as in "41.1% of households".
   `percent any` is a change or a rate that can take a sign and any size, as in "-2.5%" or
   "+150%". A share outside 0 to 100 is `invalid`, and the message suggests `percent any`. In a
   mapping, `bounds: share` or `bounds: any` says the same.
@@ -600,9 +602,8 @@ Kittum keeps what needs its database or the network: `store.py` (`ingest`, `deri
 for the PDF work. Kittum's language-model extraction becomes a `Proposer`, so every value it
 reports is confirmed against the page.
 
-Layer and anchor JSON stays compatible, with one exception: `layout.v3` changes layer hashes.
-Kittum re-derives stored layers when it first reads one with an old recipe. Anchors survive
-through `resolve`.
+A layer's id includes its recipe, so when `ASSEMBLY_VERSION` or `TABLES_VERSION` changes, the
+same PDF gives a layer with another id.
 
 ### Order of work
 

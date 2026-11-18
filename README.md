@@ -80,7 +80,7 @@ with its boxes. `compare` checks the extraction against reference data. Its last
 $ janus compare examples/invoice/spec.yaml examples/invoice/document.pdf examples/invoice/reference.json | tail -n 3
 match         total/amount                   expected "391.20", got "391.20"  difference 0.00, tolerance 0
 match         total/currency                 expected "GBP", got "GBP"
-26 match
+34 match
 ```
 
 [examples](examples/README.md) has two more documents, one of them a table that runs over three
@@ -145,9 +145,15 @@ cd ../..
 uv sync --locked --project packages/janus   # without the extra, as the READMEs' output is
 uv run --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
 uv run --project packages/janus ruff check --config packages/janus/pyproject.toml examples
+uv run --project packages/janus pytest examples
 uv run --project packages/janus python examples/check_readme.py README.md examples/README.md
+uvx --isolated --from ./packages/janus janus --help   # a clean install without extras
 
-cd apps/workbench/server
+cd examples
+uv run --project ../packages/janus python make_examples.py
+git status --porcelain .   # empty when the committed examples are what the script writes
+
+cd ../apps/workbench/server
 uv sync --locked
 uv run ruff format --check src tests
 uv run ruff check src tests
@@ -157,13 +163,14 @@ uv run pytest
 cd ../web
 pnpm install --frozen-lockfile
 pnpm check        # format, lint, types, unit tests, build
-pnpm generate     # the API types; `git diff` must then show nothing
-pnpm exec playwright install chromium
+pnpm generate && git diff --exit-code -- src/api   # the API types match the server
+pnpm exec playwright install --with-deps chromium
 pnpm e2e          # the three screens in a browser, against the real server
 ```
 
-The last command runs every command this README and the examples README show and fails when the
-output differs from what they print.
+`examples/check_readme.py` runs the commands this README and the examples README show. It fails
+when a command prints something else, exits with another status, or when this block names a
+command that CI does not run.
 
 ## Name and logo
 

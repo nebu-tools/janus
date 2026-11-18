@@ -10,9 +10,9 @@ reference data for `janus compare` (`reference.json`).
 | [parts-list](parts-list)         | a ruled table of 94 rows over three pages that repeat the header    |
 
 The commands below run from this folder, with `janus` installed as the
-[README](../README.md#install) describes. CI runs each one and fails when its output differs
-from what is printed here. The layer IDs are those of an install without the `triage` extra. With
-it they differ, because a layer records how each page's text was judged.
+[README](../README.md#install) describes. CI runs each one and fails when its output or its exit
+status differs from what is printed here. The layer IDs are those of an install without the
+`triage` extra. With it they differ, because a layer records how each page's text was judged.
 
 ## Invoice
 
@@ -56,7 +56,7 @@ $ janus compare invoice/spec.yaml invoice/document.pdf invoice/reference.json | 
 match         vat/currency                   expected "GBP", got "GBP"
 match         total/amount                   expected "391.20", got "391.20"  difference 0.00, tolerance 0
 match         total/currency                 expected "GBP", got "GBP"
-26 match
+34 match
 ```
 
 ## Purchase order
@@ -77,7 +77,7 @@ extracted   vat                        p1   {"amount": "635.17", "currency": "EU
 extracted   due                        p1   {"amount": "3978.17", "currency": "EUR"}
 28 extracted
 $ janus compare purchase-order/spec.yaml purchase-order/document.pdf purchase-order/reference.json | tail -n 1
-26 match
+38 match
 ```
 
 ## Parts list
@@ -126,5 +126,7 @@ match         parts/93/weight                expected "9.3", got "9.3"  differen
 uv run --project ../packages/janus python make_examples.py
 ```
 
-The script writes the three PDFs and the parts list's reference data. It needs the Liberation
-Sans fonts; the PDFs it writes are committed, so running it is only needed after changing it.
+The script writes the three PDFs and their reference data from the same values, so `compare`
+checks each extraction against data that never passed through Janus. The fonts it sets the text
+in are in [fonts](fonts), so it writes the same bytes on any machine. Its output is committed,
+and CI fails when the script writes something else.

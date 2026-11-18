@@ -2,7 +2,7 @@
 
 PyMuPDF's `find_tables` gates borderless tables with its Layout model, which Janus does not use
 until its source is published. Without it, only fully
-ruled tables are found. Journal tables are mostly three-rule tables, so this module also finds a
+ruled tables are found. Many printed tables have only three rules, so this module also finds a
 table from its "Table N" caption and the full-width rules below it, then builds the grid from the
 words themselves:
 

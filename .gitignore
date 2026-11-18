@@ -1,11 +1,6 @@
-# Dependencies
-node_modules/
-
 # Build outputs
 dist/
 build/
-out/
-*.tsbuildinfo
 
 # Python
 __pycache__/
@@ -19,14 +14,7 @@ venv/
 # Tooling caches
 .ruff_cache/
 .pytest_cache/
-.playwright-mcp/
-coverage/
-.nyc_output/
 .coverage
-
-# Test outputs
-playwright-report/
-test-results/
 
 # AI assistant working directories (not product code)
 .claude/
