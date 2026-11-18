@@ -52,8 +52,13 @@ packages/janus/                 distribution janus-pdf, import name janus_pdf
     canonical.py                RFC 8785 canonical JSON for hashes
   tests/                        fixtures/make_fixtures.py builds the test PDFs
   scripts/benchmark.py          timings on a generated 100-page document
-apps/workbench/                 FastAPI server and React client; depends on janus-pdf only
+examples/                       three invented PDFs, each with a spec and reference data
+  make_examples.py              builds the PDFs
+  check_readme.py               runs the commands a README shows and compares their output
+assets/branding/                the logo
 ```
+
+The workbench is not built yet. It will live in `apps/workbench` and depend on `janus-pdf` only.
 
 The library depends on pydantic, PyMuPDF, pypdfium2, rapidfuzz and PyYAML. Docling,
 pdf-inspector and OCR are optional. Janus never imports Kittum.
@@ -555,9 +560,7 @@ read the PDF.
 
 ## What Kittum imports
 
-Kittum depends on `janus-pdf` and imports from `janus_pdf` and `janus_pdf.document`. Kittum
-already depends on the old Janus server, whose import name is `janus`; the new import name keeps
-the two apart.
+Kittum will depend on `janus-pdf` and import from `janus_pdf` and `janus_pdf.document`:
 
 - The model: `Layer`, `Page`, `Word`, `Line`, `Table`, `TableCell`, `Box`, `Anchor`, `CellRef`,
   `RawLayer`, `ParserRecipe`.
@@ -577,14 +580,15 @@ Layer and anchor JSON stays compatible, with one exception: `layout.v3` changes 
 Kittum re-derives stored layers when it first reads one with an old recipe. Anchors survive
 through `resolve`.
 
-### Migration order
+### Order of work
 
-1. Janus releases `janus-pdf` with the document layer, values, spec, extract, compare and the CLI.
-   Its tests include the ported document tests.
-2. A Kittum pull request adds the dependency, deletes `src/kittum/documents/` except `store.py`
-   and `acquisition.py`, deletes `extraction/janus_path.py`, and changes imports. Kittum's
-   document tests run against Janus.
-3. Janus deletes the old engine and apps after the workbench runs on `janus-pdf`.
+1. Done: `janus-pdf` holds the document layer, values, spec, extract, compare and the CLI, with
+   the document tests. This repository holds nothing else that reads PDFs.
+2. To do: a Kittum pull request adds the dependency, deletes `src/kittum/documents/` except
+   `store.py` and `acquisition.py`, deletes `extraction/janus_path.py`, and changes imports.
+   Kittum's document tests then run against Janus. Until it merges, Kittum pins the commit of
+   this repository it was built against, so nothing on `main` has to serve it.
+3. To do: the workbench, on `janus-pdf`.
 
 ## The workbench
 
@@ -630,7 +634,7 @@ page, value, then the message and suggestions on the next lines.
 
 ## Performance
 
-| Step                                     | Target            | Measured in the spike                                        |
+| Step                                     | Target            | Measured                                                     |
 | ---------------------------------------- | ----------------- | ------------------------------------------------------------ |
 | Read, PyMuPDF, born-digital              | ≤ 0.25 s per page | 0.15–0.19 s per page (10 pages); 0.20 s per page (100 pages) |
 | Read, PDFium                             | ≤ 0.1 s per page  | 0.07 s per page                                              |
@@ -638,8 +642,6 @@ page, value, then the message and suggestions on the next lines.
 | Extract one spec, 100 pages, first spec  | ≤ 0.5 s           | 0.34 s                                                       |
 | Extract one spec, 100 pages, later specs | ≤ 100 ms          | 46 ms                                                        |
 | Extract one spec, 1–10 pages             | ≤ 200 ms          | 7–165 ms                                                     |
-
-The old engine took 13.6–18.1 s to read and extract the 10-page article.
 
 `scripts/benchmark.py` measures these steps on a generated 100-page document and prints them
 beside the targets. `pytest -m benchmark` runs the same steps as tests that fail at twice the
@@ -655,7 +657,7 @@ optimize first.
 - Handwriting recognition, and OCR other than through `ocrmypdf`.
 - A built-in language-model proposer, prompts or model routing.
 - Learning specs from examples. Click to locate proposes locators, and a person chooses them.
-- Review workflows, reviewer decisions and comparison reviews. These go with the old app.
+- Review workflows, reviewer decisions and comparison reviews.
 - A database. The library keeps nothing, and the workbench uses files.
 - Identity of records across runs. `items/2` is the third row in document order, nothing more.
 - Kittum-specific storage, acquisition and schemas.

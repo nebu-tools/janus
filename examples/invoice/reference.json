@@ -1,0 +1,15 @@
+{
+  "number": "LC-2026-0318",
+  "date": "2026-05-14",
+  "customer": "Tern Street Riders",
+  "due": "2026-06-13",
+  "lines": [
+    { "description": "Wheel truing", "qty": 4, "amount": { "amount": "72.00", "currency": "GBP" } },
+    { "description": "Brake cable, 1.6 mm", "qty": 12, "amount": { "amount": "39.00", "currency": "GBP" } },
+    { "description": "Chain, 9 speed", "qty": 5, "amount": { "amount": "107.00", "currency": "GBP" } },
+    { "description": "Workshop time, hours", "qty": 3, "amount": { "amount": "108.00", "currency": "GBP" } }
+  ],
+  "subtotal": { "amount": "326.00", "currency": "GBP" },
+  "vat": { "amount": "65.20", "currency": "GBP" },
+  "total": { "amount": "391.20", "currency": "GBP" }
+}

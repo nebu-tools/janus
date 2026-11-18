@@ -1,4 +1,15 @@
 {
-  "order": { "id": "PO-1042" },
-  "totals": { "grand_total": 1275.5 }
+  "order_date": "2026-03-09",
+  "deliver_by": "2026-04-20",
+  "supplier": "Halde Glas und Metall",
+  "items": [
+    { "code": "GL-040", "qty": 24, "amount": { "amount": "444.00", "currency": "EUR" } },
+    { "code": "AL-112", "qty": 36, "amount": { "amount": "351.00", "currency": "EUR" } },
+    { "code": "VT-007", "qty": 4, "amount": { "amount": "248.00", "currency": "EUR" } },
+    { "code": "SV-FIT", "qty": 2, "amount": { "amount": "2300.00", "currency": "EUR" } }
+  ],
+  "fitting_days": 2,
+  "net": { "amount": "3343.00", "currency": "EUR" },
+  "vat": { "amount": "635.17", "currency": "EUR" },
+  "due": { "amount": "3978.17", "currency": "EUR" }
 }

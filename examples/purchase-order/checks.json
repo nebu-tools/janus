@@ -1,8 +1,0 @@
-[
-  { "path": "/order/number", "reference_pointer": "/order/id" },
-  {
-    "path": "/order/total",
-    "reference_pointer": "/totals/grand_total",
-    "absolute_tolerance": 0.01
-  }
-]

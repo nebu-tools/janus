@@ -225,7 +225,7 @@ def test_proposals_are_confirmed_or_marked_unconfirmed(invoice):
         "vat": {"label": "Tax", "type": "money GBP"},
         "po": {"label": "PO number"},
         "due": {"label": "Due", "type": "date"},
-        "customer": {"label": "Client"},
+        "customer": {"label": "Buyer"},
     }
     ex = run(invoice, fields, answers)
     vat = ex.result("vat")

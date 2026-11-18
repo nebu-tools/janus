@@ -1,0 +1,10 @@
+name: Parts list
+fields:
+  list_number: { label: List number }
+  issued: { label: Issued, type: date }
+  parts_listed: { label: Parts listed, type: integer }
+  parts:
+    records:
+      header: { part: Part, description: Description, qty: Qty, weight: "Weight, g" }
+      continues: header
+    columns: { qty: integer, weight: decimal }

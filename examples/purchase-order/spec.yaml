@@ -1,0 +1,13 @@
+name: Purchase order
+fields:
+  order_date: { label: Order date, type: date }
+  deliver_by: { label: Deliver by, type: date }
+  supplier: { label: Supplier }
+  items:
+    records:
+      header: { code: Code, description: Description, qty: Qty, unit_price: Unit price, amount: Amount }
+    columns: { qty: integer, unit_price: "money EUR 1.234,56", amount: "money EUR 1.234,56" }
+  fitting_days: { label: SV-FIT, column: Qty, type: integer }
+  net: { label: Net total, type: "money EUR 1.234,56" }
+  vat: { label: VAT 19%, type: "money EUR 1.234,56" }
+  due: { label: Amount due, type: "money EUR 1.234,56" }
