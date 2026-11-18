@@ -61,11 +61,15 @@ class Jobs:
         sender.close()
         end = time.monotonic() + deadline
         try:
-            while not receiver.poll(0.05):
+            # An answer counts only when it comes before the deadline, so no wait runs past it.
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    raise JobFailed(f"it took longer than the limit of {deadline:g} seconds")
+                if receiver.poll(min(left, 0.05)):
+                    break
                 if cancel is not None and cancel.is_set():
                     raise JobCancelled
-                if time.monotonic() >= end:
-                    raise JobFailed(f"it took longer than the limit of {deadline:g} seconds")
             try:
                 status, value = receiver.recv()
             except (EOFError, OSError):

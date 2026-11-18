@@ -28,6 +28,11 @@ def test_a_worker_that_dies_costs_only_itself():
     assert jobs.run(max, 1, 2, deadline=10) == 2  # the next job runs as if nothing happened
 
 
+def test_an_answer_after_the_deadline_does_not_count():
+    with pytest.raises(JobFailed, match="longer than the limit of 0 seconds"):
+        Jobs().run(max, 1, 2, deadline=0)
+
+
 def test_a_worker_that_hangs_is_killed_at_the_deadline():
     started = time.monotonic()
     with pytest.raises(JobFailed, match=r"longer than the limit of 0\.2 seconds"):
