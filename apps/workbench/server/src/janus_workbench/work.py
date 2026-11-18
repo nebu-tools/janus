@@ -12,11 +12,11 @@ def count_pages(pdf: str) -> int:
     return janus_pdf.page_count(Path(pdf))
 
 
-def read_layer(pdf: str, cache: str, layers: str) -> dict:
-    """Read the PDF and write its layer to `layers`, named by the layer's ID. Pages are kept in
-    `cache` as they are read, so a read that was stopped goes on from there."""
+def read_layer(pdf: str, cache: str, out: str) -> dict:
+    """Read the PDF and write its layer to `out`. Pages are kept in `cache` as they are read, so
+    a read that was stopped goes on from there."""
     layer = janus_pdf.read(Path(pdf), janus_pdf.PyMuPDFParser(cache=cache))
-    path = Path(layers) / f"{layer.id}.json"
+    path = Path(out)
     partial = path.with_suffix(".part")
     partial.write_text(layer.model_dump_json())
     partial.replace(path)

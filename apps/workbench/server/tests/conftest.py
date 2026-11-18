@@ -1,8 +1,12 @@
+import socket
+import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from janus_workbench.app import create_app
@@ -27,6 +31,33 @@ def settings(tmp_path: Path) -> Settings:
 def client(settings: Settings) -> Iterator[TestClient]:
     with serve(settings) as client:
         yield client
+
+
+def wait_until(condition: Callable[[], object], what: str, seconds: float = 30.0) -> None:
+    """Return once `condition()` is true. The deadline only stops a test that would hang."""
+    end = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > end:
+            raise AssertionError(f"not {what} after {seconds} seconds")
+        time.sleep(0.01)
+
+
+@contextmanager
+def live(settings: Settings) -> Generator[tuple[str, int]]:
+    """The app served by uvicorn on a real socket, for what a TestClient cannot do: hang up in
+    the middle of a body, or read the answer before the body ends."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    app = create_app(settings, static=None)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="on"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    try:
+        wait_until(lambda: server.started, "started")
+        yield listener.getsockname()[:2]
+    finally:
+        server.should_exit = True
+        thread.join()
+        listener.close()
 
 
 def upload(client: TestClient, pdf: bytes, name: str = "document.pdf") -> dict:

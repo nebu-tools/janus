@@ -3,13 +3,14 @@
 import json
 import os
 import signal
+import socket
 import threading
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import serve
+from conftest import INVOICE, serve, upload
 from janus_workbench import cli
 from janus_workbench.app import create_app
 from janus_workbench.jobs import JobCancelled, JobFailed, Jobs
@@ -52,25 +53,73 @@ def test_a_failure_inside_the_job_is_reported_without_its_details():
         Jobs().run(os.stat, "/nonexistent/secret/path", deadline=10)
 
 
-def test_serve_refuses_an_outside_address_without_the_flag(monkeypatch, capsys, tmp_path):
+def resolver(names: dict[str, list[str]]):
+    """A resolver that knows `names` and resolves a literal address as the system does."""
+
+    def resolve(host, port, **_):
+        if host in names:
+            return [
+                (socket.AF_INET6 if ":" in a else socket.AF_INET, 1, 6, "", (a, port))
+                for a in names[host]
+            ]
+        return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST)
+
+    return resolve
+
+
+def test_serve_listens_only_on_loopback_addresses_without_the_flag(monkeypatch, capsys, tmp_path):
     import uvicorn
 
-    calls = []
+    from janus_workbench import app
+
+    calls, hosts = [], []
     monkeypatch.setattr(uvicorn, "run", lambda _, **options: calls.append(options))
+    create_app = app.create_app
+    monkeypatch.setattr(
+        app, "create_app", lambda *a, **kw: hosts.append(kw["hosts"]) or create_app(*a, **kw)
+    )
     monkeypatch.setenv("JANUS_DATA_DIR", str(tmp_path))
-    for host in ("0.0.0.0", "192.168.1.20", "::", "example.org"):
-        assert cli.main(["serve", "--host", host]) == 2
+    resolve = resolver(
+        {
+            "localhost": ["127.0.0.1", "::1"],
+            "dev.example": ["127.0.0.1"],
+            "mixed.example": ["127.0.0.1", "192.0.2.7"],  # one of its addresses is another machine
+            "far.example": ["192.0.2.7"],
+        }
+    )
+
+    def serve(*args: str) -> int:
+        return cli.main(["serve", *args], resolve=resolve)
+
+    for host in ("0.0.0.0", "::", "192.0.2.7", "mixed.example", "far.example"):
+        assert serve("--host", host) == 2, host
     assert calls == []
     assert "--listen-without-auth" in capsys.readouterr().err
 
-    assert cli.main(["serve"]) == 0
-    assert cli.main(["serve", "--host", "::1", "--port", "9000"]) == 0
-    assert cli.main(["serve", "--host", "0.0.0.0", "--listen-without-auth"]) == 0
+    assert serve() == 0
+    assert serve("--host", "localhost") == 0
+    assert serve("--host", "::1", "--port", "9000") == 0
+    assert serve("--host", "dev.example") == 0
+    assert serve("--host", "0.0.0.0", "--listen-without-auth") == 0
+    assert serve("--host", "::", "--listen-without-auth") == 0
+    # It listens on the address it checked, never on a name looked up again.
     assert [(c["host"], c["port"]) for c in calls] == [
         ("127.0.0.1", 8440),
+        ("127.0.0.1", 8440),
         ("::1", 9000),
+        ("127.0.0.1", 8440),
         ("0.0.0.0", 8440),
+        ("::", 8440),
     ]
+    assert "dev.example" in hosts[3] and hosts[4] is None and hosts[5] is None
+
+
+def test_serve_says_so_when_a_name_does_not_resolve(capsys):
+    def resolve(*_, **__):
+        raise socket.gaierror("Name or service not known")
+
+    assert cli.main(["serve", "--host", "nowhere.example"], resolve=resolve) == 2
+    assert "cannot resolve nowhere.example" in capsys.readouterr().err
 
 
 def test_openapi_prints_the_api(capsys, monkeypatch, tmp_path):
@@ -84,8 +133,52 @@ def test_openapi_prints_the_api(capsys, monkeypatch, tmp_path):
 def test_a_request_under_another_host_name_is_refused(client, settings):
     assert client.get("/api/documents", headers={"host": "example.org"}).status_code == 400
     assert client.get("/api/documents", headers={"host": "localhost:8440"}).status_code == 200
-    with serve(settings, any_host=True) as open_client:
+    assert client.get("/api/documents", headers={"host": "[::1]:8440"}).status_code == 200
+    with serve(settings, hosts=None) as open_client:
         assert open_client.get("/api/documents", headers={"host": "example.org"}).status_code == 200
+
+
+FOREIGN = {"origin": "https://elsewhere.example"}
+
+
+def test_a_request_from_a_page_on_another_site_is_refused(client, read):
+    row = read(client, INVOICE)
+    image = f"/api/documents/{row['id']}/pages/1/image"
+    assert client.get(image).status_code == 200
+    assert client.get(image, headers={"origin": "http://127.0.0.1"}).status_code == 200
+    assert client.get(image, headers=FOREIGN).status_code == 403
+    assert client.get(image, headers={"origin": "null"}).status_code == 403
+    form = client.post(
+        "/api/documents",
+        content=b"name=x",
+        headers={**FOREIGN, "content-type": "application/x-www-form-urlencoded"},
+    )
+    assert form.status_code == 403
+    plain = client.post(
+        f"/api/documents/{row['id']}/extract",
+        content='{"spec": "fields: {}"}',
+        headers={**FOREIGN, "content-type": "text/plain"},
+    )
+    assert plain.status_code == 403
+    assert plain.json() == {"detail": "the workbench answers only its own pages"}
+    delete = client.delete(f"/api/documents/{row['id']}", headers=FOREIGN)
+    assert delete.status_code == 403
+    assert len(client.get("/api/documents").json()) == 1
+
+
+def test_every_answer_may_be_used_only_by_the_workbench_s_own_pages(client):
+    row = upload(client, INVOICE.read_bytes())
+    answers = [
+        client.get("/api/documents"),
+        client.get(f"/api/documents/{row['id']}/pages/1/image"),
+        client.get("/api/nothing"),
+        client.get("/api/documents", headers={"host": "example.org"}),
+        client.get("/api/documents", headers=FOREIGN),
+        client.get("/"),
+    ]
+    for answer in answers:
+        assert answer.headers["cross-origin-resource-policy"] == "same-origin", answer.url
+        assert answer.headers["x-content-type-options"] == "nosniff", answer.url
 
 
 def test_the_client_is_served_from_a_list_of_its_own_files(settings, tmp_path):

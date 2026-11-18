@@ -16,7 +16,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import janus_pdf
 from janus_pdf import Box, Inspection, Line, SpecError, Table, TableCell
@@ -36,6 +39,13 @@ from janus_workbench.store import (
 )
 
 STATIC = Path(__file__).parent / "static"
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+# On every response: another site's page may not embed it, and the browser takes its type as
+# given.
+SAFE_HEADERS = {
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+}
 
 DocumentId = Annotated[str, PathParam(pattern=HASH_PATTERN, description="SHA-256 of the PDF")]
 SpecName = Annotated[str, PathParam(pattern=SPEC_NAME_PATTERN)]
@@ -106,6 +116,45 @@ def _boxes(anchors: Any) -> list[Box]:
     return [box for anchor in anchors for box in anchor.boxes]
 
 
+def shown_name(name: str) -> str:
+    """The file name a row shows: the last part of what was sent, without control characters,
+    at most 200 characters. It is never part of a path."""
+    printable = "".join(ch for ch in name if ch.isprintable())
+    last = printable.replace("\\", "/").rsplit("/", 1)[-1].strip()[:200]
+    return last if last not in ("", ".", "..") else "document.pdf"
+
+
+class _SameOrigin:
+    """Refuse a request whose `Origin` is not the server's own, and add `SAFE_HEADERS` to every
+    response. A browser sends `Origin` with every request a page on another site makes that
+    could change something, so such a request ends here."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        origin = headers.get("origin")
+        if origin is not None and origin != f"{scope['scheme']}://{headers.get('host', '')}":
+            refused = JSONResponse(
+                {"detail": "the workbench answers only its own pages"},
+                status_code=403,
+                headers=SAFE_HEADERS,
+            )
+            await refused(scope, receive, send)
+            return
+
+        async def send_safe(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).update(SAFE_HEADERS)
+            await send(message)
+
+        await self.app(scope, receive, send_safe)
+
+
 def _static_files(directory: Path) -> dict[str, Path]:
     """The client's files by URL path, listed once. A request is looked up here, so no path is
     ever built from a URL."""
@@ -120,10 +169,11 @@ def create_app(
     settings: Settings,
     *,
     static: Path | None = STATIC,
-    any_host: bool = False,
+    hosts: tuple[str, ...] | None = LOOPBACK_HOSTS,
     start: bool = True,
 ) -> FastAPI:
-    """The workbench app. `start=False` builds it without touching the disk, for `openapi`."""
+    """The workbench app. A request must name one of `hosts` in its `Host` header; None allows
+    any. `start=False` builds it without touching the disk, for `openapi`."""
     store: Store
     reader: Reader
     jobs = Jobs()
@@ -135,7 +185,7 @@ def create_app(
         nonlocal store, reader
         store = Store(settings.data_dir)
         reader = Reader(store, jobs, settings)
-        reader.resume()
+        reader.start()
         try:
             yield
         finally:
@@ -147,9 +197,10 @@ def create_app(
         lifespan=lifespan if start else None,
         generate_unique_id_function=lambda route: route.name,
     )
-    if not any_host:
+    if hosts is not None:
         # A page on another site cannot reach the API by pointing a name of its own at 127.0.0.1.
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]"])
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
+    app.add_middleware(_SameOrigin)  # added last, so it runs first and covers every response
 
     @app.exception_handler(Unknown)
     async def unknown(_: Request, exc: Unknown) -> Response:
@@ -161,10 +212,11 @@ def create_app(
             raise HTTPException(409, "the document is not read yet")
         return row
 
-    def layout(layer_id: str) -> dict[int, PageLayout]:
+    def layout(row: DocumentRow) -> dict[int, PageLayout]:
         """The layer's words, lines, tables and cells by page, sorted once per layer."""
+        layer_id = row.layer or ""
         if layer_id not in by_page:
-            layer = store.layer(layer_id)
+            layer = store.layer(row.id)
             pages = {
                 p.number: PageLayout(page=p.number, words=[], lines=[], tables=[], cells=[])
                 for p in layer.pages
@@ -200,12 +252,11 @@ def create_app(
         },
         responses={413: {"description": "The file is larger than the limit"}},
     )
-    async def add_document(
-        request: Request, name: Annotated[str, Query(max_length=300)] = "document.pdf"
-    ) -> DocumentRow:
+    async def add_document(request: Request, name: str = "document.pdf") -> DocumentRow:
         """Take a PDF as the request body and queue it for reading.
 
-        A file that is not a readable PDF is kept too: its row says why it failed.
+        A file that does not start as a PDF is refused. A PDF that cannot be read is kept, and
+        its row says why it failed. The name is only shown; see `shown_name`.
         """
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/pdf":
             raise HTTPException(415, "send the file as application/pdf")
@@ -214,31 +265,40 @@ def create_app(
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > limit:
             raise too_large
-        digest, size = hashlib.sha256(), 0
-        with tempfile.NamedTemporaryFile(dir=store.incoming, delete=False) as upload:
-            path = Path(upload.name)
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > limit:
-                    break
-                digest.update(chunk)
-                upload.write(chunk)
-        if size > limit or size == 0:
-            path.unlink()
-            raise too_large if size else HTTPException(400, "the request has no body")
-        shown = "".join(ch for ch in name if ch.isprintable()).strip()[:200] or "document.pdf"
-        row, needs_read = store.add(path, digest.hexdigest(), shown, size)
-        if needs_read:
-            reader.submit(row.id)
+        digest, size, head = hashlib.sha256(), 0, b""
+        path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=store.incoming, delete=False) as upload:
+                path = Path(upload.name)
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise too_large
+                    head = (head + chunk)[:5] if len(head) < 5 else head
+                    digest.update(chunk)
+                    upload.write(chunk)
+            if size == 0:
+                raise HTTPException(400, "the request has no body")
+            if head != b"%PDF-":
+                raise HTTPException(422, "the file is not a PDF: it does not start with %PDF-")
+            row = await run_in_threadpool(
+                store.add, path, digest.hexdigest(), shown_name(name), size
+            )
+            path = None  # the store has it now
+        finally:
+            # A client that hangs up, a file too large, not a PDF or any other failure: the
+            # partial upload goes.
+            if path is not None:
+                path.unlink(missing_ok=True)
+        reader.wake()
         return store.row(row.id)
 
     @app.delete("/api/documents/{document}", status_code=204)
     def delete_document(document: DocumentId) -> None:
-        reader.cancel(document)
-        row = store.row(document)
-        store.remove(document)
-        if row.layer:
-            by_page.pop(row.layer, None)
+        """Remove the document and its files. A read of it in progress is stopped first."""
+        layer = store.row(document).layer
+        reader.remove(document)
+        by_page.pop(layer or "", None)
 
     @app.get("/api/documents/{document}/inspect")
     def inspect_document(
@@ -246,12 +306,12 @@ def create_app(
         find: Annotated[str | None, Query(max_length=500)] = None,
     ) -> Inspection:
         """Pages, tables with their first rows, headings, and where `find` is printed."""
-        layer = store.layer(ready(document).layer or "")
+        layer = store.layer(ready(document).id)
         return janus_pdf.inspect(layer, find=find or None)
 
     @app.get("/api/documents/{document}/pages/{page}")
     def page_layout(document: DocumentId, page: PageNumber) -> PageLayout:
-        pages = layout(ready(document).layer or "")
+        pages = layout(ready(document))
         if page not in pages:
             raise HTTPException(404, "no such page")
         return pages[page]
@@ -296,7 +356,7 @@ def create_app(
     @app.post("/api/documents/{document}/extract")
     def extract_document(document: DocumentId, body: ExtractIn) -> ExtractOut:
         """Run a spec, given as text, against the document."""
-        layer = store.layer(ready(document).layer or "")
+        layer = store.layer(ready(document).id)
         try:
             # `load_spec` reads a one-line string as a file name when such a file exists. The
             # line break makes it text, so a request can never name a file on this machine.

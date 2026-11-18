@@ -46,3 +46,13 @@ def test_a_spec_name_is_a_key_and_never_a_file_name(client, settings):
     files = {p.name for p in (settings.data_dir / "specs").iterdir()}
     assert all(name == "index.json" or len(name) == 69 for name in files), files
     assert not (settings.data_dir / "outside").exists()
+
+
+def test_saved_specs_stay_when_a_document_is_removed(client, read):
+    from conftest import INVOICE
+
+    client.put("/api/specs/kept", json={"text": "fields: {}\n"})
+    row = read(client, INVOICE)
+    assert client.delete(f"/api/documents/{row['id']}").status_code == 204
+    assert [s["name"] for s in client.get("/api/specs").json()] == ["kept"]
+    assert client.get("/api/specs/kept").json()["text"] == "fields: {}\n"

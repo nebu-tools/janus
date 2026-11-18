@@ -1,13 +1,20 @@
-"""The queue that reads uploaded documents, a few at a time, each in a worker process."""
+"""Reading uploaded documents, a few at a time, each in a worker process.
 
+The queue is the rows on disk with status `queued`. `read_workers` threads each take the queued
+row sent first, read it and take the next. Nothing is held in memory for a document that waits,
+so the queue can be as long as the list.
+"""
+
+import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from janus_workbench import work
 from janus_workbench.jobs import JobCancelled, JobFailed, Jobs
 from janus_workbench.settings import Settings
 from janus_workbench.store import Store
+
+log = logging.getLogger(__name__)
 
 
 class Reader:
@@ -15,43 +22,70 @@ class Reader:
         self._store = store
         self._jobs = jobs
         self._settings = settings
-        self._pool = ThreadPoolExecutor(settings.read_workers, thread_name_prefix="read")
-        self._cancels: dict[str, threading.Event] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
+        self._running: dict[str, threading.Event] = {}  # being read: at most read_workers
+        self._closing = False
+        self._threads = [
+            threading.Thread(target=self._work, name=f"read-{n}", daemon=True)
+            for n in range(settings.read_workers)
+        ]
 
-    def resume(self) -> None:
-        """Queue every document whose read was cut off when the server last stopped."""
-        for row in self._store.rows():
-            if row.status in ("queued", "reading"):
-                self.submit(row.id)
+    def start(self) -> None:
+        """Start the workers. Rows a stop cut off are queued already, so they are read first."""
+        for thread in self._threads:
+            thread.start()
 
-    def submit(self, document: str) -> None:
-        cancel = threading.Event()
+    def wake(self) -> None:
+        """A row was queued."""
         with self._lock:
-            self._cancels[document] = cancel
-        self._store.update(document, status="queued", error=None)
-        self._pool.submit(self._read, document, cancel)
+            self._lock.notify_all()
 
-    def cancel(self, document: str) -> None:
+    def remove(self, document: str) -> None:
+        """Take the document out of the list and the queue. When it is being read, kill its
+        worker process and wait until it is gone, then delete the files."""
         with self._lock:
-            cancel = self._cancels.pop(document, None)
-        if cancel is not None:
-            cancel.set()
+            self._store.take(document)
+            cancel = self._running.get(document)
+            if cancel is not None:
+                cancel.set()
+            while document in self._running:
+                self._lock.wait()
+        self._store.delete(document)
 
     def close(self) -> None:
-        """Stop every read. Rows stay queued or reading on disk, so the next start resumes."""
+        """Stop every read and wait for the workers. Rows stay as they are on disk, so the next
+        start reads them again."""
         with self._lock:
-            for cancel in self._cancels.values():
+            self._closing = True
+            for cancel in self._running.values():
                 cancel.set()
-        self._pool.shutdown(wait=True, cancel_futures=True)
+            self._lock.notify_all()
+        for thread in self._threads:
+            if thread.is_alive():
+                thread.join()
+
+    def _work(self) -> None:
+        while True:
+            with self._lock:
+                document = None
+                while not self._closing and (document := self._store.claim()) is None:
+                    self._lock.wait()
+                if document is None:
+                    return
+                cancel = self._running[document] = threading.Event()
+            try:
+                self._read(document, cancel)
+            except Exception:
+                log.exception("reading %s failed", document)
+            finally:
+                with self._lock:
+                    del self._running[document]
+                    self._lock.notify_all()
 
     def _read(self, document: str, cancel: threading.Event) -> None:
         store, limit = self._store, self._settings.read_deadline
         started = time.monotonic()
         try:
-            if cancel.is_set():
-                return
-            store.update(document, status="reading")
             pdf = str(store.pdf(document))
             pages = self._jobs.run(work.count_pages, pdf, deadline=limit, cancel=cancel)
             if pages > self._settings.max_pages:
@@ -60,25 +94,20 @@ class Reader:
                 )
             store.update(document, pages=pages)
             left = max(limit - (time.monotonic() - started), 0.0)
-            cache = str(store.page_cache(document))
+            cache, layer = str(store.page_cache(document)), str(store.layer_path(document))
             summary = self._jobs.run(
-                work.read_layer, pdf, cache, str(store.layers), deadline=left, cancel=cancel
+                work.read_layer, pdf, cache, layer, deadline=left, cancel=cancel
             )
         except JobCancelled:
-            return
+            return  # removed, or the server stops
         except JobFailed as failure:
             message = str(failure)
             if message.startswith("it took longer"):
                 message = f"reading took longer than the limit of {limit:g} seconds"
-            store.update(document, status="failed", error=message)
+            store.finish(document, status="failed", error=message)
             return
         except Exception as exc:
-            store.update(document, status="failed", error=f"reading failed ({type(exc).__name__})")
+            store.finish(document, status="failed", error=f"reading failed ({type(exc).__name__})")
             raise
-        finally:
-            with self._lock:
-                if self._cancels.get(document) is cancel:
-                    del self._cancels[document]
         seconds = round(time.monotonic() - started, 2)
-        store.update(document, status="ready", read_seconds=seconds, **summary)
-        store.drop_page_cache(document)
+        store.finish(document, status="ready", read_seconds=seconds, **summary)

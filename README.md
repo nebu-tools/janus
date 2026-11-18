@@ -109,7 +109,8 @@ uv run janus-workbench serve    # http://127.0.0.1:8440
 ```
 
 The server listens on 127.0.0.1 and has no sign-in, so anyone who can reach its address can read
-and delete every document. It refuses any other address unless you pass `--listen-without-auth`.
+and delete every document. `--host` takes another loopback address, or a name whose every
+address is loopback. Any other address needs `--listen-without-auth`.
 
 Documents, page images and saved specs are files under `JANUS_DATA_DIR`, by default
 `~/.local/share/janus-workbench`. `JANUS_MAX_UPLOAD_MB` (200), `JANUS_MAX_PAGES` (2000) and

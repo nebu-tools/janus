@@ -627,29 +627,56 @@ logic of its own: each endpoint answers from one library function or from the fi
 
 ### The server
 
-Everything is a file under `JANUS_DATA_DIR`. There is no database. A document is kept under the
-SHA-256 of its bytes, a layer under its ID, a page image under a hash of the document, page,
-scale and renderer, and a spec's text under its own hash. A path on disk is never built from
+Everything is a file under `JANUS_DATA_DIR`. There is no database. A document is kept in a
+directory named by the SHA-256 of its bytes, with its row, its layer, its page cache and its page
+images, each image under a hash of the document, page, scale and renderer. A spec's text is
+kept under its own hash, so removing a document leaves every spec as it is. A path on disk is never built from
 text a request sent. It is built only from a hash the server computed, checked against
 `[0-9a-f]{64}` first. A spec's name is a key in an index file and never part of a path. The
 client's files are listed once at start, and a request is looked up in that list.
 
 Reading and rendering run in worker processes, one process for each job. A job has a deadline,
-and a process that passes it is killed. An upload is refused above `JANUS_MAX_UPLOAD_MB`, and a
-document above `JANUS_MAX_PAGES` is not read. Two documents are read at a time.
+and a process that passes it is killed. An upload is refused above `JANUS_MAX_UPLOAD_MB` as soon
+as that many bytes have arrived, and a file that does not start with `%PDF-` is refused too. The
+partial file is deleted on every refusal and when the client hangs up. A PDF that cannot be read
+becomes a row that says why it failed, and a document above `JANUS_MAX_PAGES` is not read. The
+name sent with a file is only shown: the part after the last `/` or `\`, without control
+characters, at most 200 characters.
+
+Each upload gets an order key, one more than the last key given out. The last key is kept in a
+file, so a key is never given out twice, also across restarts. The list shows the highest key
+first. The same bytes sent again make no second row: the row keeps its key, its place and its
+name. Only a document that failed is read again, and then it gets a new key and moves to the
+top.
+
+The queue is the rows on disk with status `queued`. `JANUS_READ_WORKERS` threads (two by default)
+each take the queued row with the lowest key, so documents are read in the order they came.
+Nothing else is held for a document that waits. Removing a queued document takes it out of the
+queue; removing one being read kills its worker process and waits until it is gone. When the
+server starts, a read that was cut off is queued again.
 
 A read writes each page to the document's page cache (`PyMuPDFParser(cache=...)`). The documents
 list counts the files there, so the client shows progress by polling that one endpoint while a
-document is being read. When the server starts it queues every document whose read was cut off,
-and the read goes on from the pages already written. The cache is deleted once the layer is
-saved.
+document is being read. A read cut off by a stop goes on from the pages already written. The
+cache is deleted before the row says `ready` or `failed`, under the lock the list is read with,
+so a finished row never has a cache beside it. At start the server deletes the cache of every
+row that is not queued.
 
-The server has no sign-in. It listens on 127.0.0.1 and refuses another address unless started
-with `--listen-without-auth`. On 127.0.0.1 it also refuses a request whose `Host` header names
-anything but this machine, so a page on another site cannot reach it through a name of its own.
+The server has no sign-in. It listens on 127.0.0.1 by default. `--host` takes a loopback
+address, or a name whose every address is loopback; anything else needs
+`--listen-without-auth`. The name is resolved once, and the server listens on the address that
+was checked. On a loopback address it also refuses a request whose `Host` header names anything
+but this machine, so a page on another site cannot reach it through a name of its own.
 
-A spec that does not load is an answer, with the message and the line, and is no HTTP error. A
-file that is no readable PDF becomes a row that says why it failed.
+A page on another site can still make the browser send requests to the workbench. Every such
+request that could change something carries an `Origin` header, and the server answers 403 to
+any `Origin` other than its own, on every route. A plain image or script tag sends no `Origin`,
+so every answer also carries `Cross-Origin-Resource-Policy: same-origin`, and the browser then
+refuses to hand the answer to the other page; `X-Content-Type-Options: nosniff` keeps the browser
+from reading an answer as a script or style sheet. The other page can learn only that a request
+failed.
+
+A spec that does not load is an answer, with the message and the line, and is no HTTP error.
 
 ### The client
 
