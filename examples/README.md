@@ -11,7 +11,8 @@ reference data for `janus compare` (`reference.json`).
 
 The commands below run from this folder, with `janus` installed as the
 [README](../README.md#install) describes. CI runs each one and fails when its output differs
-from what is printed here.
+from what is printed here. The layer IDs are those of an install without the `triage` extra. With
+it they differ, because a layer records how each page's text was judged.
 
 ## Invoice
 
@@ -20,7 +21,7 @@ a `label` would accept it there.
 
 ```console
 $ janus inspect invoice/document.pdf --find "Total due"
-document 628db0ae1c87  layer 397ad300b78c  engine pymupdf
+document 628db0ae1c87  layer e3a4530035ba  engine pymupdf
 page   1  text               70 words
 
 headings
@@ -86,7 +87,7 @@ opens with the same header. Without that key the field is `ambiguous`, and the m
 
 ```console
 $ janus inspect parts-list/document.pdf --rows 2
-document 7b69f57fdc2a  layer 21f62164c2cb  engine pymupdf
+document 7b69f57fdc2a  layer c26a060aeacf  engine pymupdf
 page   1  text              323 words  tables p1t0
 page   2  text              306 words  tables p2t0
 page   3  text              118 words  tables p3t0
