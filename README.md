@@ -142,6 +142,7 @@ uv run ty check src tests scripts
 uv run pytest
 
 cd ../..
+uv sync --locked --project packages/janus   # without the extra, as the READMEs' output is
 uv run --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
 uv run --project packages/janus ruff check --config packages/janus/pyproject.toml examples
 uv run --project packages/janus python examples/check_readme.py README.md examples/README.md
