@@ -33,8 +33,8 @@ def test_labels_dates_and_money(invoice):
     }
     total = ex.result("total")
     assert total.method == "label"
-    assert total.anchor.quote.exact == "£627.00"
-    assert total.anchor.boxes and total.anchor.boxes[0].page == 1
+    assert total.anchors[0].quote.exact == "£627.00"
+    assert total.anchors[0].boxes and total.anchors[0].boxes[0].page == 1
 
 
 def test_a_numeric_date_without_a_format_is_invalid(invoice):
@@ -159,7 +159,7 @@ def test_records_under_a_header_that_is_not_the_first_row(order):
         "amount": {"amount": "1085.50", "currency": "EUR"},
     }
     assert ex.result("items").method == "records"
-    assert ex.result("items/1/amount").anchor.cells[0].row == 3
+    assert ex.result("items/1/amount").anchors[0].cells[0].row == 3
 
 
 def test_records_without_rules_stop_at_a_stop_label(invoice):
@@ -230,7 +230,7 @@ def test_proposals_are_confirmed_or_marked_unconfirmed(invoice):
     ex = run(invoice, fields, answers)
     vat = ex.result("vat")
     assert vat.status == "extracted" and vat.method == "proposed:answers"
-    assert vat.anchor.quote.exact == "£104.50"
+    assert vat.anchors[0].quote.exact == "£104.50"
     assert vat.message == "confirmed by its quote on page 1"
     for path in ("po", "due", "customer"):
         r = ex.result(path)
@@ -266,7 +266,7 @@ def test_compare(invoice, inspection):
     assert checks["number"].status == "mismatch"  # text, not a number
     assert (checks["vat/amount"].status, checks["vat/amount"].message) == (
         "not_extracted",
-        "the field is missing",
+        "vat is missing",
     )
     assert checks["po"].message == "the path is not in the spec"
 
@@ -295,7 +295,7 @@ def test_compare(invoice, inspection):
             {"x": {"records": {"header": {"a": "A"}}, "columns": {"b": "integer"}}},
             "not in the header",
         ),
-        ({"x": {"label": "X", "pages": "two"}}, "pages is a page number"),
+        ({"x": {"label": "X", "pages": "two"}}, "pages: expected a page number"),
         ({"x y": {"label": "X"}}, "field names"),
     ],
 )

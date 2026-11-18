@@ -82,8 +82,10 @@ checks = janus_pdf.compare(ex, reference, rules={})                        # com
   place a phrase is printed. It tells a spec author what each locator will see.
 - `extract` returns an `Extraction`. `ex.data` is the nested output: a field that is not
   extracted is `None`. `ex.fields` holds one `FieldResult` per field, with its status, value,
-  printed text, anchor, method, message, candidates and suggestions. `ex.result(path)` returns
-  one result.
+  type, printed text, anchors, method, message, candidates and suggestions. `ex.result(path)`
+  returns one result. A value printed in one run of words has one anchor; a value whose words
+  have other words between them, such as a description wrapped under a quantity, has one
+  anchor for each run.
 - `compare` returns a list of `Check`. Each check has a path, a status, the expected and actual
   values, a message and an anchor.
 - `janus_pdf.resolve(anchor, layer)` finds an anchor again in another layer of the same document.
@@ -190,9 +192,16 @@ fields:
 ```
 
 Quote a type that contains a comma inside `{…}`, because YAML splits a flow mapping at commas.
-A group holds its own `fields:`, and its fields get paths like `shipping/method`. Record cells have paths like `items/2/qty`. Unknown
-keys, a field with no locator or with two locators, and a bad type all fail when the spec loads.
-The error names the field and the key.
+A group holds its own `fields:`, and its fields get paths like `shipping/method`. Record cells
+have paths like `items/2/qty`.
+
+The spec is checked when it loads, against a pydantic model of every key, so a malformed spec
+cannot reach a locator. Every failure is a `SpecError` that names the field and the key:
+`items: records.header: expected a mapping of keys to printed headers, not ['Qty']`. It is raised
+for an unknown key, a field with no locator or two, a value of the wrong kind for any key
+(`cell: 3`, `fields: null`, `label: 123`), a bad type, and a spec that contradicts itself, such
+as a `region` page or a numbered `cell` table outside the field's `pages`, or a `filled` key that
+is not one of the header's keys.
 
 ### Locators
 
@@ -201,16 +210,71 @@ Each field has exactly one locator:
 - `label: Text` reads the value printed after a label. `label: [Text, Other text]` accepts several
   names. In a table, add `column: Header` to read the cell in that column on the label's row. The
   column must equal one of the headers in the cell's header path.
-- `cell: {table, row, column}` reads one cell by position. `inspect` lists table IDs.
-- `records: {header, stop}` reads a table as a list of objects. `header` maps output keys to
-  printed headers. The header can be any row of a ruled table, or a printed row of words when the
-  table has no rules. Rows stop at a large vertical gap or at a row that begins with a `stop`
-  label.
+- `cell: {table, row, column}` reads one cell. `table` is a table ID from `inspect` or a number
+  counting the tables on the field's pages from 1. `row` is a row number or a row label, and
+  `column` a column number or a header. A merged cell is read where it covers the row and the
+  column; an empty cell is `missing` with "is empty".
+- `records: {header, stop, filled}` reads a table as a list of objects. See "Records" below.
 - `section: Heading` reads the text under a heading up to the next heading of the same or higher
-  rank. `under: Parent` picks one heading when the document uses the same heading twice.
-- `region: {page, box}` reads the words inside a box, in PDF points from the top left.
+  rank. `under: Parent` picks one heading when the document uses the same heading twice. When the
+  same heading is printed twice under the same parent, `under:` cannot tell them apart, and the
+  message says to narrow the field with `pages:` or to take the text with a `region`.
+- `region: {page, box}` reads exactly the words inside a box, in PDF points from the top left of
+  the page as displayed, in reading order. A word is inside when the centre of its box is: a word
+  that straddles the edge belongs to the region that holds more than half of it, so two regions
+  that share an edge never both take it, and a box drawn past the edge of the page takes what is
+  printed up to the edge.
 
-`pages: 3` or `pages: 3-5` limits any locator to those pages.
+`pages: 3` or `pages: 3-5` limits a field to those pages. It applies in one place: every
+locator, and the confirmation of a proposal, reads the layer through a view of the field's pages,
+so words, tables, headings, label matches and suggestions on other pages do not exist for that
+field.
+
+### Records
+
+`header` maps output keys to printed headers. The header can be any row of a ruled table, or a
+printed row of words when the table has no rules; in a table without rules each column spans its
+header's width. Each row becomes an object whose cells are the exact words in each column, and
+each record keeps the page it is printed on.
+
+Rows end at a row whose first printed text begins with a `stop` label, on a word boundary, or
+at the end of the table; in a table without rules, a gap of more than 2.2 line heights also ends
+them. Carried and brought forward lines
+("Carried forward", "Balance brought forward", "c/f", "continued") are left out, and so are
+running heads, running feet and page numbers. Janus counts a line as furniture when an adjacent
+page prints the same text, digits aside, at the same height, and it is not in a table cell.
+
+Records follow a table onto the next page only when the continuation is certain:
+
+1. the rows run to the foot of their page, with nothing below them but furniture and continued
+   lines;
+2. the next page is on the field's pages; and
+3. that page opens, after furniture and continued lines only, with the same header printed
+   again, or with a table whose column edges match within 1.5 points. For rows without rules,
+   the second case is a first line aligned with the header's columns, edge to edge within 1.5
+   points, in at least two columns. In a ruled table title rows above the repeated header are
+   skipped.
+
+When the rows run to the foot of a page and the next page does not certainly continue them, the
+field is `incomplete`, with no value. The message gives what was found and why the list may go
+on: "40 rows under the header on page 1; the rows run to the foot of page 1, and page 2 neither
+repeats the header nor starts with a row under the same columns; if the rows end on page 1, say
+so with `pages:` or a `stop:` label". When the field's last page
+ends with a carried-forward line, the rows go on outside the field's pages, and the field is also
+`incomplete`.
+
+In a table without rules a record can wrap. A line that fills only some of the columns the
+record's first line fills is a wrapped line of that record when it is set closer to the line
+above than records are to one another: at most three quarters of the smallest spacing between
+lines that certainly start records. Its words join that record's cells, and their boxes join
+those cells' anchors. A line the spacing does not settle, and a short line at the top of a page,
+makes the field `ambiguous`, and the message names the line, the record above, and the remedy:
+`filled: qty` says that a line with nothing in the `qty` column continues the record above. A
+ruled table's rows follow its grid and never wrap.
+
+`filled` is the one key records adds for this. A gap rule cannot settle a line set at the record
+spacing, and naming the column that every record fills is something the spec author can read off
+the page.
 
 ### How a label matches
 
@@ -223,9 +287,13 @@ kind of dash, and no trailing colon. Then:
    "Length" for "Length, mm, mean ± SD", gives a suggestion, not a value.
 3. Outside a table, the value is the rest of the line. If the rest of the line is empty, the value
    is the words to the right on the same visual row, then the next line.
-4. A value on the label's own line must be set off from the label by a colon or by a gap wider
-   than 0.8 times the line height. Without one, a text field gets a suggestion and no value.
-   "Due" in "Due date 11 April 2026" therefore never returns "date 11 April 2026".
+4. A value on the label's own line must be set off from the label by a separator or by a gap
+   wider than 0.8 times the line height. Without one, a text field gets a suggestion and no
+   value. "Due" in "Due date 11 April 2026" therefore never returns "date 11 April 2026". The
+   separator is a colon, or a hyphen, en dash or em dash with a space or the line end after it.
+   The label locator drops the separator and nothing else, so "Amount: -123" and "Amount -123"
+   read -123 and "Amount - 8" reads 8. No other locator drops anything: a cell or a region that
+   prints "-12" reads -12.
 5. Janus uses fuzzy matching only when nothing matches. It scores the opening words of each line
    and cell with rapidfuzz and returns up to three suggestions of 75 or more. A suggestion is
    never a value.
@@ -248,6 +316,7 @@ type: { kind: integer, absent: ["NR", "n/a", "—"] }
 | `integer`           | `1,234`                                            | `1234`                                                   |
 | `decimal`           | `1.234,56` with `1.234,56`                         | `"1234.56"`                                              |
 | `percent`           | `41.1%`                                            | `"41.1"`                                                 |
+| `percent any`       | `-2.5%` or `150%`                                  | `"-2.5"` or `"150"`                                      |
 | `date`              | `12 March 2026`, or `11/04/2026` with `DD/MM/YYYY` | `"2026-03-12"`                                           |
 | `money`             | `£627.00`                                          | `{"amount": "627.00", "currency": "GBP"}`                |
 | `count_percent`     | `12 (34.5%)`                                       | `{"count": 12, "percent": "34.5"}`                       |
@@ -266,8 +335,14 @@ strings. Other rules:
   in April or November.
 - `$` needs a declared currency, because many currencies use it. A printed currency that differs
   from the declared one is an error.
-- Janus checks what it can: an estimate must lie inside its interval, a percent must be between 0
-  and 100, a p-value between 0 and 1, and a standard deviation must not be negative.
+- A number may carry a sign: a hyphen-minus, the minus sign U+2212 or a plus. A number in
+  parentheses, such as `(123)` or `(£40.00)`, is negative, and the result says so in a note.
+- `percent` is a share: a number from 0 to 100, as in "41.1% of patients".
+  `percent any` is a change or a rate that can take a sign and any size, as in "-2.5%" or
+  "+150%". A share outside 0 to 100 is `invalid`, and the message suggests `percent any`. In a
+  mapping, `bounds: share` or `bounds: any` says the same.
+- Janus checks what it can: an estimate must lie inside its interval, a p-value must lie between
+  0 and 1, and a standard deviation must not be negative.
 - `absent` lists printed markers that mean "no value". The default is `NR`, `N/A`, `not reported`
   and a lone dash. A marker gives an extracted `None` with a note.
 
@@ -280,14 +355,23 @@ Each field result has one status:
 | `extracted`   | The value meets the extracted rule.                                  |
 | `missing`     | The locator found nothing. Suggestions may follow.                   |
 | `ambiguous`   | The locator found several places that disagree. Each is a candidate. |
+| `incomplete`  | Records that may go on where the page cannot show they do.           |
 | `invalid`     | The locator found text, and the text does not parse as the type.     |
 | `unconfirmed` | A proposer gave a value, and Janus could not confirm it on the page. |
 
 The extracted rule: a field is `extracted` only when all three of these are true:
 
-1. The locator found one place, or several places whose parsed values are equal.
+1. The locator found one place, or several places that print the same value.
 2. The whole printed text at that place parses as the field's type.
-3. Janus can make an anchor with at least one box for that text.
+3. Janus can make anchors, with at least one box, for exactly the words of that text.
+
+"The same value" is decided by the field's type. Numbers are the same when they are equal as
+numbers, so "4.60" and "4.6" agree in a decimal field. Text is the same only when it is equal
+after spacing, so a text field printed `Code: 001` in one place and `Code: 1` in another is
+`ambiguous`. Dates, money and compound values compare part by part in the same way.
+
+`ambiguous` also covers a printed line that could belong to two records. A records field that is
+`ambiguous` or `incomplete` keeps no rows: a partial list is never presented as the whole.
 
 Every other result has a value of `None`. `ex.data` therefore contains only values that meet the
 rule. A program that reads `ex.data` cannot get an unchecked value by mistake.
@@ -315,10 +399,12 @@ class Proposal:
 `extract` asks the proposer only about fields that are not extracted, and passes it the failed
 result. Janus confirms a proposal in this order:
 
-1. It searches for `quote` in the layer, by whole tokens. The search must give exactly one place.
-   If the quote is printed more than once, `context` and `page` must narrow it to one.
+1. It searches for `quote` on the field's pages, by whole tokens. The search must give exactly
+   one place. If the quote is printed more than once, `context` and `page` must narrow it to one.
 2. The quote must parse, whole, as the field's type.
-3. The parsed value must equal the proposed value.
+3. The parsed value must be the same value as the proposal, by the type's equality. For a text
+   field that means the printed text itself: a proposal of "1" with the quote "001" is
+   unconfirmed.
 
 A confirmed proposal is `extracted`, with method `proposed:<name>` and an anchor. Any other
 proposal is `unconfirmed`. Its value stays out of `ex.data`, and the message gives the reason
@@ -341,11 +427,13 @@ read the PDF.
   Reference data can leave out fields.
 - `rules` maps path patterns (`fnmatch`, like `items/*/amount`) to `tolerance` (absolute),
   `relative`, or `text: exact | casefold | spacing`.
-- Values compare as numbers only when the extracted value is an integer or a canonical decimal
-  string. A text field that prints `0451` is never equal to the number 451.
+- Values compare by the type of the field that holds them, the same equality the extracted rule
+  uses. A numeric part compares as a number, with the rule's tolerance, and a reference that is
+  not a number is a mismatch. A text field compares as text, so one that prints `0451` is never
+  equal to the number 451.
 - Statuses: `match`, `mismatch` and `not_extracted`. A reference path that the spec does not
-  have, or a field whose status is not `extracted`, gives `not_extracted`. It is never a match.
-  Each check carries the field's anchor.
+  have, or a field whose status is not `extracted`, gives `not_extracted`, and the message says
+  which field and its status. It is never a match. Each check carries the field's anchors.
 
 ## What Kittum imports
 

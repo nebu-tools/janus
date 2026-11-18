@@ -47,7 +47,7 @@ def extraction_text(ex: Extraction, cells: bool = False) -> str:
         parts = r.path.split("/")
         if not cells and any(p.isdigit() for p in parts) and r.status == "extracted":
             continue
-        page = f"p{r.anchor.boxes[0].page}" if r.anchor and r.anchor.boxes else "  "
+        page = f"p{r.page}" if r.page is not None else "  "
         lines.append(f"{r.status:<11} {r.path:<26} {page:<4} {_short(r.value)}")
         if r.message:
             lines.append(f"{'':11} {'':26} {'':4} {r.message}")

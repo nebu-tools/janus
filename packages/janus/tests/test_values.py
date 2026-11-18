@@ -1,7 +1,7 @@
 import pytest
 
 from janus_pdf.spec import SpecError, value_type
-from janus_pdf.values import ParseError, ValueType, parse, same_value
+from janus_pdf.values import ParseError, ValueType, parse
 
 
 @pytest.mark.parametrize(
@@ -80,6 +80,10 @@ def test_bad_types_fail_when_the_spec_loads(raw):
         value_type(raw, "f")
 
 
-def test_same_value_compares_decimals_by_number():
-    assert same_value({"mean": "4.60"}, {"mean": "4.6"})
-    assert not same_value("4.6", "4.7")
+def test_same_compares_by_type():
+    assert ValueType("mean_sd").same({"mean": "4.60", "sd": "1"}, {"mean": "4.6", "sd": "1.0"})
+    assert not ValueType("decimal").same("4.6", "4.7")
+    assert not ValueType("text").same("001", "1")
+    assert ValueType("integer").same(1, "1")
+    assert ValueType("text").same("a  b", "a b")
+    assert not ValueType("text").same(None, "")

@@ -1,5 +1,5 @@
-"""Build the test PDFs in this directory: a survey report, an invoice, a purchase order and an
-inspection report.
+"""Build the test PDFs in this directory: a survey report, an invoice, a purchase order, an
+inspection report and a stock ledger.
 
     uv run python tests/fixtures/make_fixtures.py
 
@@ -544,8 +544,55 @@ def inspection_report() -> None:
     w.save(HERE / "inspection-report.pdf", "Mill Lane Footbridge Inspection")
 
 
+# --- The stock ledger ----------------------------------------------------------------------------
+
+# Item, description, qty. The table runs over three pages: page 2 repeats the header, page 3
+# does not; each page break has a carried-forward line above it and a brought-forward line below.
+LEDGER_PAGES = [
+    [(f"SK-{100 + i}", f"Shelf bracket, size {i + 1}", str(10 + i)) for i in range(40)],
+    [(f"SK-{140 + i}", f"Wall anchor, pack {i + 1}", str(50 + i)) for i in range(40)],
+    [(f"SK-{180 + i}", f"Hinge pin, set {i + 1}", str(5 + i)) for i in range(6)],
+]
+
+
+def stock_ledger() -> None:
+    """A ruled table of 86 items over three pages, with a page footer on every page."""
+    w = Writer()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    xs = [x0, x0 + 90, x0 + 360, x1]
+    row = 16.0
+    for number, items in enumerate(LEDGER_PAGES, start=1):
+        page = w.page()
+        top = 70.0
+        lines: list[tuple[tuple[str, ...], bool]] = []
+        if number == 1:
+            w.text(page, x0, 52, "Juniper Row Stores: stock ledger", size=14, bold=True)
+            top = 70.0
+        if number < 3:
+            lines.append((("Item", "Description", "Qty"), True))
+        if number > 1:
+            lines.append((("Brought forward", "", ""), False))
+        lines += [(item, False) for item in items]
+        if number < 3:
+            lines.append((("Carried forward", "", ""), False))
+        else:
+            lines.append((("Total", "", "86 lines"), True))
+        bottom = top + len(lines) * row
+        for r in range(len(lines) + 1):
+            w.rule(page, x0, x1, top + r * row)
+        for x in xs:
+            w.vrule(page, x, top, bottom)
+        for r, (values, bold) in enumerate(lines):
+            for x, value in zip(xs, values, strict=False):
+                if value:
+                    w.text(page, x + 4, top + r * row + 11.5, value, size=8.5, bold=bold)
+        w.text(page, x0, HEIGHT - 30, f"Stock ledger, page {number} of 3", size=8)
+    w.save(HERE / "stock-ledger.pdf", "Juniper Row Stores stock ledger")
+
+
 if __name__ == "__main__":
     report()
     invoice()
     purchase_order()
     inspection_report()
+    stock_ledger()

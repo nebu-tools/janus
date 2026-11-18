@@ -7,19 +7,24 @@ against the extracted value at the same path, so the reference decides what is c
     checks = compare(extraction, {"total": {"amount": "627.00", "currency": "GBP"}},
                      rules={"*/amount": {"tolerance": "0.01"}})
 
-Numbers compare as decimals, within an absolute or relative tolerance. Text compares exactly,
-or ignoring case and spacing. A value that was not extracted is never a match or a mismatch:
-it is reported as `not_extracted`, so a missing value cannot pass as agreement.
+Each leaf compares as the field's type says. A number (an integer, a decimal, a percent, the
+amount of money) compares as a decimal, within an absolute or relative tolerance, and the
+reference may give it as a number or as a plain decimal string. Text compares exactly, or
+ignoring case and spacing, and only with text: an invoice number printed "001" does not match
+a reference 1. Dates, currencies and comparators compare exactly. A value that was not
+extracted is never a match or a mismatch: it is reported as `not_extracted`, so a missing value
+cannot pass as agreement.
 """
 
 import fnmatch
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Literal
 
 from janus_pdf.document import Anchor
 from janus_pdf.extract import Extraction, FieldResult
+from janus_pdf.values import Scalar, as_number
 
 CheckStatus = Literal["match", "mismatch", "not_extracted"]
 TextMode = Literal["exact", "casefold", "spacing"]
@@ -82,36 +87,23 @@ def _at(data: Any, path: str) -> tuple[bool, Any]:
     return True, data
 
 
-def _owner(results: dict[str, FieldResult], path: str) -> FieldResult | None:
-    """The field result a leaf belongs to: the longest result path that prefixes it."""
+def _owners(results: dict[str, FieldResult], path: str) -> list[FieldResult]:
+    """The field results a leaf belongs to, longest path first: a record's cell, then the
+    records field it is part of."""
     parts = path.split("/")
-    for n in range(len(parts), 0, -1):
-        r = results.get("/".join(parts[:n]))
-        if r is not None:
-            return r
-    return None
+    found = (results.get("/".join(parts[:n])) for n in range(len(parts), 0, -1))
+    return [r for r in found if r is not None]
 
 
-def _number(value: Any) -> Decimal | None:
-    if isinstance(value, bool) or value is None:
+def _scalar(owner: FieldResult, path: str) -> Scalar | None:
+    """How the leaf at `path` of `owner`'s value compares, from the owner's type."""
+    if owner.type is None:
         return None
+    rest = path[len(owner.path) + 1 :] if path != owner.path else None
     try:
-        d = Decimal(str(value))
-    except InvalidOperation:
+        return owner.type.scalar(rest)
+    except ValueError:
         return None
-    return d if d.is_finite() else None
-
-
-def _numeric(actual: Any) -> Decimal | None:
-    """An extracted number: an int, or a decimal string as Janus writes them ("627.00").
-    Text that happens to be digits, such as an invoice number "0451", is not a number."""
-    if isinstance(actual, int) and not isinstance(actual, bool):
-        return Decimal(actual)
-    if isinstance(actual, str):
-        d = _number(actual)
-        if d is not None and format(d, "f") == actual:
-            return d
-    return None
 
 
 def _text(value: str, mode: TextMode) -> str:
@@ -134,47 +126,41 @@ def compare(
     checks = []
     for path, expected in _leaves(reference):
         how = next((r for p, r in patterns if fnmatch.fnmatchcase(path, p)), Rule())
-        owner = _owner(results, path)
+        owners = _owners(results, path)
         present, actual = _at(data, path)
-        if owner is None or owner.status != "extracted" or not present or actual is None:
-            if owner is None:
+        failed = next((o for o in reversed(owners) if o.status != "extracted"), None)
+        if not owners or failed is not None or not present or actual is None:
+            if not owners:
                 why = "the path is not in the spec"
-            elif owner.status == "extracted" and present:
-                why = f"printed as {owner.printed!r}, which marks the value as not reported"
-            elif owner.status == "extracted":
-                why = "the extracted value has no such path"
+            elif failed is not None:
+                why = f"{failed.path} is {failed.status}"
+            elif present:
+                why = f"printed as {owners[0].printed!r}, which marks the value as not reported"
             else:
-                why = f"the field is {owner.status}"
+                why = "the extracted value has no such path"
             checks.append(Check(path, "not_extracted", expected, None, why))
             continue
-        anchor = owner.anchor
-        a, e = _numeric(actual), _number(expected)
-        if a is not None and e is not None:
+        owner = owners[0]
+        anchor = owner.anchors[0] if owner.anchors else None
+        how_compared = _scalar(owner, path)
+        if how_compared == "number":
+            a, e = as_number(actual), as_number(expected)
+            if a is None or e is None:
+                checks.append(Check(path, "mismatch", expected, actual,
+                                    "the reference is not a number", anchor))  # fmt: skip
+                continue
             limit = how.tolerance * abs(e) if how.relative else how.tolerance
             diff = abs(a - e)
-            checks.append(
-                Check(
-                    path,
-                    "match" if diff <= limit else "mismatch",
-                    expected,
-                    actual,
-                    f"difference {diff}, tolerance {limit}",
-                    anchor,
-                )
-            )
+            status: CheckStatus = "match" if diff <= limit else "mismatch"
+            checks.append(Check(path, status, expected, actual,
+                                f"difference {diff}, tolerance {limit}", anchor))  # fmt: skip
             continue
-        if isinstance(actual, str) and isinstance(expected, str):
-            ok = _text(actual, how.text) == _text(expected, how.text)
+        if how_compared == "text":
+            ok = isinstance(expected, str) and _text(actual, how.text) == _text(expected, how.text)
+            why = "" if ok else ("the reference is not text" if not isinstance(expected, str)
+                                 else "values differ")  # fmt: skip
         else:
             ok = actual == expected
-        checks.append(
-            Check(
-                path,
-                "match" if ok else "mismatch",
-                expected,
-                actual,
-                "" if ok else "values differ",
-                anchor,
-            )
-        )
+            why = "" if ok else "values differ"
+        checks.append(Check(path, "match" if ok else "mismatch", expected, actual, why, anchor))
     return tuple(checks)

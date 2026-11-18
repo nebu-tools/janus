@@ -6,6 +6,10 @@ the extractor say a value was extracted: the printed text and the value describe
 
 Decimals come out as strings ("41.1", "627.00") so they keep the precision they were printed
 with. Dates come out as ISO strings. Compound values come out as small objects.
+
+Each type also says when two of its values are equal (`ValueType.same`): text after collapsing
+whitespace, numbers by value, dates and codes exactly, and compound values part by part. There is
+no comparison without a type, because "001" and "1" are the same integer and different text.
 """
 
 import re
@@ -31,6 +35,16 @@ KINDS: tuple[str, ...] = Kind.__args__  # type: ignore[attr-defined]
 
 ABSENT = ("NR", "N/R", "NA", "N/A", "not reported", "\u2014", "\u2013", "-")
 
+# How a scalar compares: "text" after collapsing whitespace, "number" by value, "exact" as is.
+Scalar = Literal["text", "number", "exact"]
+_SCALARS: dict[str, Scalar] = {
+    "text": "text",
+    "integer": "number",
+    "decimal": "number",
+    "percent": "number",
+    "date": "exact",
+}
+
 
 class ParseError(ValueError):
     """The printed text is not a value of the declared type."""
@@ -53,6 +67,7 @@ class ValueType:
     currency: str | None = None
     pick: str | None = None
     absent: tuple[str, ...] = ABSENT
+    bounds: Literal["share", "any"] = "share"
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -67,15 +82,75 @@ class ValueType:
             )
         for pattern in self.formats:
             _date_regex(pattern, self.locale)  # fails early on a bad pattern
+        if self.bounds not in ("share", "any"):
+            raise ValueError(f"bounds is share or any, not {self.bounds!r}")
+        if self.bounds != "share" and self.kind != "percent":
+            raise ValueError("bounds goes with percent")
+
+    def scalar(self, component: str | None = None) -> Scalar:
+        """How a value of this type, or the named component of one, compares."""
+        part = component or self.pick
+        if part is None:
+            if self.kind in PARTS:
+                raise ValueError(
+                    f"a {self.kind} has parts; name one of {', '.join(PARTS[self.kind])}"
+                )
+            return _SCALARS[self.kind]
+        parts = PARTS.get(self.kind, {})
+        if part not in parts:
+            raise ValueError(f"{self.kind} has no component {part!r}")
+        return parts[part]
+
+    def same(self, a: Any, b: Any) -> bool:
+        """Whether `a` and `b` are the same value of this type. None, the not-reported value,
+        equals only None."""
+        if a is None or b is None:
+            return a is None and b is None
+        if self.pick is None and self.kind in PARTS:
+            parts = PARTS[self.kind]
+            return (
+                isinstance(a, dict)
+                and isinstance(b, dict)
+                and a.keys() == b.keys() == parts.keys()
+                and all(_same(how, a[k], b[k]) for k, how in parts.items())
+            )
+        return _same(self.scalar(), a, b)
 
 
-COMPONENTS: dict[str, tuple[str, ...]] = {
-    "money": ("amount", "currency"),
-    "count_percent": ("count", "percent"),
-    "mean_sd": ("mean", "sd"),
-    "estimate_interval": ("estimate", "lower", "upper"),
-    "p_value": ("comparator", "value"),
+def as_number(value: Any) -> Decimal | None:
+    """`value` as a finite decimal: an int, a Decimal, a float, or a string that is a plain
+    number such as "627.00" or "-3". Anything else, booleans included, is None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal, str)):
+        return None
+    if isinstance(value, str) and not re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", value):
+        return None
+    try:
+        d = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return d if d.is_finite() else None
+
+
+def _same(how: Scalar, a: Any, b: Any) -> bool:
+    if how == "number":
+        x, y = as_number(a), as_number(b)
+        return x is not None and x == y
+    if not (isinstance(a, str) and isinstance(b, str)):
+        return False
+    if how == "text":
+        return " ".join(a.split()) == " ".join(b.split())
+    return a == b
+
+
+# The parts of each compound type, and how each part compares.
+PARTS: dict[str, dict[str, Scalar]] = {
+    "money": {"amount": "number", "currency": "exact"},
+    "count_percent": {"count": "number", "percent": "number"},
+    "mean_sd": {"mean": "number", "sd": "number"},
+    "estimate_interval": {"estimate": "number", "lower": "number", "upper": "number"},
+    "p_value": {"comparator": "exact", "value": "number"},
 }
+COMPONENTS: dict[str, tuple[str, ...]] = {kind: tuple(parts) for kind, parts in PARTS.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +202,24 @@ def _number(text: str, vt: ValueType) -> Decimal:
 
 def _dec(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _negative(value: Decimal, text: str) -> Decimal:
+    """An amount printed in parentheses, as accounts print a negative one."""
+    if value < 0:
+        raise ParseError(f"{text!r} has both a sign and parentheses")
+    return -value
+
+
+def _signed(text: str, vt: ValueType) -> tuple[Decimal, tuple[str, ...]]:
+    """A number with an optional sign, or in parentheses for a negative one: "-12", "+3.5",
+    "\u2212 4" (the minus sign is folded by `clean`), "(1,250.00)"."""
+    m = re.fullmatch(r"\(\s*(.*?)\s*\)", text)
+    if m:
+        return _negative(_number(m.group(1), vt), text), (
+            f"{text!r} is in parentheses, read as negative",
+        )
+    return _number(re.sub(r"^([-+])\s+", r"\1", text), vt), ()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -274,9 +367,16 @@ DOLLAR_CODES = {"USD", "CAD", "AUD", "NZD", "SGD", "HKD", "MXN"}
 
 
 def _money(text: str, vt: ValueType) -> dict[str, str]:
+    whole = re.fullmatch(r"\(\s*([^()]*?)\s*\)", text)
+    if whole:  # "(£40.00)": the amount and its currency in parentheses
+        money = _money(whole.group(1), vt)
+        money["amount"] = _dec(_negative(Decimal(money["amount"]), text))
+        return money
     num = _number_pattern(vt)
     sym = "|".join(re.escape(s) for s in [*SYMBOLS, "$"]) + r"|[A-Z]{3}"
-    m = re.fullmatch(rf"(?P<pre>{sym})?\s*(?P<num>{num})\s*(?P<post>{sym})?", text)
+    m = re.fullmatch(
+        rf"(?P<pre>{sym})?\s*(?P<open>\(\s*)?(?P<num>{num})(?(open)\s*\))\s*(?P<post>{sym})?", text
+    )
     if not m or (m.group("pre") and m.group("post")):
         raise ParseError(f"{text!r} is not an amount printed like {vt.numbers}")
     printed = m.group("pre") or m.group("post")
@@ -292,7 +392,10 @@ def _money(text: str, vt: ValueType) -> dict[str, str]:
             currency = code
     if currency is None:
         raise ParseError(f"{text!r} prints no currency and the field declares none")
-    return {"amount": _dec(_number(m.group("num"), vt)), "currency": currency}
+    amount = _number(m.group("num"), vt)
+    if m.group("open"):
+        amount = _negative(amount, text)
+    return {"amount": _dec(amount), "currency": currency}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -374,18 +477,25 @@ def parse(printed: str, vt: ValueType) -> Parsed:
         raise ParseError("nothing is printed there")
     if text.casefold() in {a.casefold() for a in vt.absent} and vt.kind != "text":
         return Parsed(None, absent=True, notes=(f"printed as {text!r}",))
+    notes: tuple[str, ...] = ()
     match vt.kind:
         case "text":
             value: Any = text
         case "integer":
-            n = _number(text, vt)
+            n, notes = _signed(text, vt)
             if n != n.to_integral_value() or _separators(vt.numbers)[1] in text:
                 raise ParseError(f"{text!r} is not a whole number")
             value = int(n)
         case "decimal":
-            value = _dec(_number(text, vt))
+            n, notes = _signed(text, vt)
+            value = _dec(n)
         case "percent":
-            value = _dec(_number(text.removesuffix("%").strip(), vt))
+            n, notes = _signed(re.sub(r"\s*%(?=\)?$)", "", text), vt)
+            if vt.bounds == "share" and not 0 <= n <= 100:
+                raise ParseError(
+                    f"{text!r} is outside 0 to 100; a change or a ratio is `percent any`"
+                )
+            value = _dec(n)
         case "date":
             value = _date(text, vt)
         case "money":
@@ -400,21 +510,4 @@ def parse(printed: str, vt: ValueType) -> Parsed:
             value = _p_value(text, vt)
     if vt.pick is not None and isinstance(value, dict):
         value = value[vt.pick]
-    return Parsed(value)
-
-
-def same_value(a: Any, b: Any) -> bool:
-    """Whether two values are equal, comparing decimal strings by number ("41.10" == "41.1")."""
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
-    if isinstance(a, str) and isinstance(b, str):
-        try:
-            return Decimal(a) == Decimal(b)
-        except InvalidOperation:
-            return a == b
-    if isinstance(a, (int, Decimal)) and isinstance(b, (int, str, Decimal)):
-        try:
-            return Decimal(str(a)) == Decimal(str(b))
-        except InvalidOperation:
-            return False
-    return a == b
+    return Parsed(value, notes=notes)

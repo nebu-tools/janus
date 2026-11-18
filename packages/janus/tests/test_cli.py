@@ -45,7 +45,7 @@ def test_bad_input_exits_2(tmp_path, capsys):
     assert main(["extract", str(spec), str(INVOICE)]) == 2
     assert main(["inspect", str(tmp_path / "nothing.pdf")]) == 2
     err = capsys.readouterr().err
-    assert "unknown key(s) colum" in err
+    assert "unknown key colum" in err
 
 
 def test_inspect_shows_headings_tables_and_where_a_phrase_is(capsys):

@@ -46,9 +46,29 @@ A field uses one of five locators:
 | `section` | the text under a heading; `under:` names its parent heading  |
 | `region`  | the words inside a box on a page                             |
 
+`pages: 2` or `pages: 2-4` keeps any field to those pages. Nothing on the other pages exists for
+that field: no labels, tables, headings or suggestions.
+
+A `region` takes exactly the words whose box centre lies inside it, in reading order, so a word
+that straddles the edge goes to the side that holds more than half of it. A `label` drops a
+colon or a dash with a space after it, and nothing else, so `Amount: -123` reads -123.
+
+`records` follows a table onto the next page only when that page opens with the header printed
+again, or with rows under the same columns. Carried-forward lines and running heads and feet are
+left out, and each record keeps its page. When the page cannot show whether the rows go on, the
+field is `incomplete`, and the message says how many rows were found and why. In a table without
+rules, a line that fills only some columns joins the record above when it is set closer than the
+records are to one another; when the spacing does not settle it, the field is `ambiguous`, and
+`filled: qty` says that a line with nothing under `qty` continues the record above.
+
 Types include `text`, `integer`, `decimal`, `percent`, `date`, `money`, `count_percent`,
 `mean_sd`, `estimate_interval` and `p_value`. A date such as `11/04/2026` needs a declared
-format, because the page does not say which number is the day.
+format, because the page does not say which number is the day. A number may be signed or in
+parentheses, which reads as negative. `percent` is a share from 0 to 100; `percent any` is a
+change that can take a sign and any size, such as `-2.5%` or `150%`.
+
+A spec is checked as it loads. A wrong key, a value of the wrong kind, or a spec that
+contradicts itself raises a `SpecError` that names the field and the key.
 
 ## Use the command
 
@@ -71,7 +91,7 @@ extraction = janus_pdf.extract(layer, janus_pdf.load_spec("invoice.yaml"))
 
 extraction.data["total"]  # {"amount": "627.00", "currency": "GBP"}
 result = extraction.result("total")
-result.anchor.boxes[0]  # the page and box of "£627.00"
+result.anchors[0].boxes[0]  # the page and box of "£627.00"
 
 janus_pdf.compare(extraction, {"total": {"amount": "627.00"}})
 ```
@@ -83,8 +103,12 @@ Each field gets one status:
 | `extracted`   | found in one place, or in several places that print the same value |
 | `missing`     | not found; close labels come back as suggestions, never as values  |
 | `ambiguous`   | found in places that disagree; each place is listed                |
+| `incomplete`  | records that may go on where the page cannot show they do          |
 | `invalid`     | found, but the text does not read as the type                      |
 | `unconfirmed` | a proposer gave a value that the page does not confirm             |
+
+"The same value" follows the type: `4.60` and `4.6` are the same decimal, but `001` and `1` are
+different text. `compare` checks reference data with the same rule.
 
 A proposer is your own code, for example a language model, that suggests a value for a field
 Janus could not extract. Janus accepts the suggestion only when its quote is printed once and

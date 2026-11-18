@@ -1,5 +1,8 @@
 """One layer indexed for locating: label-normalised text, lookups by offset, and headings.
 
+Locators read the layer through a `View`, the index restricted to the pages a field may look on,
+so a field's `pages` applies to every locator in one place.
+
 Building the index walks the whole layer once, which on a long document costs more than
 extracting a spec from it. `index_of` keeps the index of the most recent layer, so a spec edited
 and run again, or `inspect` followed by `extract`, builds it once.
@@ -8,7 +11,7 @@ and run again, or `inspect` followed by `extract`, builds it once.
 import bisect
 import re
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from statistics import median
 
 from rapidfuzz import fuzz, process
@@ -72,6 +75,67 @@ class Index:
         self.headings = self._find_headings()
         self._units: list[tuple[int, str]] | None = None
         self._heads: dict[int, list[str]] = {}
+        self._views: dict[tuple[int, int] | None, View] = {}
+        self._furniture: frozenset[int] | None = None
+
+    def view(self, pages: tuple[int, int] | None) -> "View":
+        """The index restricted to pages `pages` (first and last), or to none."""
+        if pages not in self._views:
+            self._views[pages] = View(self, pages)
+        return self._views[pages]
+
+    @property
+    def furniture(self) -> frozenset[int]:
+        """The start offsets of the running heads, running feet and page numbers: the lines at
+        the top and the foot of a page that a neighbouring page prints at the same height with
+        the same text, digits aside.
+
+        Lines are taken by height, from the top down and from the foot up, while every line at
+        that height repeats; the first height that prints anything else ends the run. So a
+        number printed in the same place on two pages of a table is not furniture, and nothing
+        inside a table's cells is.
+        """
+        if self._furniture is None:
+            seen: dict[str, list[tuple[int, float]]] = {}
+            keys = {}
+            for ln in self._lines:
+                key = re.sub(r"\d+", "#", normalize_label(self.text(ln.start, ln.end)))
+                keys[ln.start] = key
+                seen.setdefault(key, []).append((ln.box.page, ln.box.y0))
+
+            def repeats(ln: Line) -> bool:
+                key = keys[ln.start]
+                return (
+                    bool(key)
+                    and self.cell_at(ln.start) is None
+                    and any(
+                        abs(page - ln.box.page) == 1 and abs(y - ln.box.y0) < 2
+                        for page, y in seen[key]
+                    )
+                )
+
+            out: set[int] = set()
+            pages: dict[int, list[Line]] = {}
+            for ln in self._lines:
+                pages.setdefault(ln.box.page, []).append(ln)
+            for lines in pages.values():
+                bands: list[list[Line]] = []
+                for ln in sorted(lines, key=lambda ln: ln.box.y0):
+                    if bands and ln.box.y0 - bands[-1][0].box.y0 < 2:
+                        bands[-1].append(ln)
+                    else:
+                        bands.append([ln])
+                for order in (bands, bands[::-1]):
+                    for band in order:
+                        if not all(repeats(ln) for ln in band):
+                            break
+                        out.update(ln.start for ln in band)
+            self._furniture = frozenset(out)
+        return self._furniture
+
+    def position(self, word: Word) -> int:
+        """`word`'s place in reading order."""
+        return bisect.bisect_left(self._word_starts, word.start)
 
     def text(self, start: int, end: int) -> str:
         return self.layer.text[start:end]
@@ -114,8 +178,9 @@ class Index:
                 continue
             yield Span(start, end)
 
-    def suggestions(self, label: str) -> list[str]:
-        """Up to three lines or cells whose opening words come close to `label`, best first."""
+    def suggestions(self, label: str, on: Callable[[int], bool] = lambda _: True) -> list[str]:
+        """Up to three lines or cells on pages `on` accepts whose opening words come close to
+        `label`, best first."""
         needle = normalize_label(label)
         if self._units is None:
             spans = [(ln.start, ln.end) for ln in self.layer.lines] + [
@@ -137,6 +202,8 @@ class Index:
         for i, score in scores.items():
             start, printed = self._units[i]
             n = self._whole[i]
+            if not on(self.page_of(start)):
+                continue
             if n and n != needle and (n not in best or best[n][0] < score):
                 best[n] = (score, clean(printed), self.page_of(start))
         ranked = sorted(best.values(), key=lambda s: (-s[0], s[2], s[1]))[:3]
@@ -161,6 +228,62 @@ class Index:
             if ln.size > body * 1.05 or (ln.bold and ln.size >= body * 0.85):
                 out.append(ln)
         return tuple(out)
+
+
+class View:
+    """The index as one field sees it: only the pages the field may look on.
+
+    Every locator reads through a view, so words, tables, headings, label matches and
+    suggestions on other pages do not exist for it. Offsets and text are the layer's own.
+    """
+
+    def __init__(self, index: Index, pages: tuple[int, int] | None) -> None:
+        self.index = index
+        self.layer = index.layer
+        self.pages = pages
+        self.words = [w for w in index.words if self.on(w.box.page)]
+        self.tables = tuple(t for t in index.layer.tables if self.on(t.page))
+        self.headings = tuple(h for h in index.headings if self.on(h.box.page))
+        self.by_table = index.by_table
+        self.text = index.text
+        self.page_of = index.page_of
+        self.cell_at = index.cell_at
+        self.line_at = index.line_at
+        self.position = index.position
+
+    def on(self, page: int) -> bool:
+        """Whether the field may look on `page`."""
+        return self.pages is None or self.pages[0] <= page <= self.pages[1]
+
+    def find_label(self, label: str) -> Iterator[Span]:
+        return (s for s in self.index.find_label(label) if self.on(self.page_of(s.start)))
+
+    def words_between(self, start: int, end: int) -> Iterator[Word]:
+        return (w for w in self.index.words_between(start, end) if self.on(w.box.page))
+
+    def suggestions(self, label: str) -> list[str]:
+        return self.index.suggestions(label, self.on)
+
+    def lines_on(self, page: int) -> list[Line]:
+        """The printed lines of `page`, top to bottom."""
+        return sorted(
+            (ln for ln in self.layer.lines if ln.box.page == page), key=lambda ln: ln.box.y0
+        )
+
+    def place(self, words: Iterable[Word]) -> tuple[Span, ...]:
+        """`words` as spans of the layer text in reading order: one span for each run of words
+        that follow one another with no other word between them."""
+        ordered = sorted(set(words), key=lambda w: w.start)
+        spans: list[Span] = []
+        last = -2
+        for w in ordered:
+            pos = self.position(w)
+            if spans and pos == last + 1:
+                spans[-1] = Span(spans[-1].start, w.end)
+            else:
+                spans.append(Span(w.start, w.end))
+            last = pos
+        return tuple(spans)
 
 
 _LAST: tuple[Layer, Index] | None = None
