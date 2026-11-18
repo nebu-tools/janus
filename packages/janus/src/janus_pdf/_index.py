@@ -66,6 +66,9 @@ class Index:
         self._word_starts = [w.start for w in self.words]
         self._lines = sorted(layer.lines, key=lambda ln: ln.start)
         self._line_starts = [ln.start for ln in self._lines]
+        self.page_lines: dict[int, list[Line]] = {p.number: [] for p in layer.pages}
+        for ln in sorted(layer.lines, key=lambda ln: ln.box.y0):
+            self.page_lines.setdefault(ln.box.page, []).append(ln)
         self._page_starts = [p.start for p in layer.pages]
         self.by_table: dict[str, list[TableCell]] = {t.id: [] for t in layer.tables}
         for c in layer.cells:
@@ -86,46 +89,50 @@ class Index:
 
     @property
     def furniture(self) -> frozenset[int]:
-        """The start offsets of the running heads, running feet and page numbers: the lines at
-        the top and the foot of a page that a neighbouring page prints at the same height with
-        the same text, digits aside.
+        """The start offsets of the running heads, running feet and page numbers: the lines in
+        the top or bottom eighth of a page that a neighbouring page prints at the same height
+        with the same text, digits aside.
 
         Lines are taken by height, from the top down and from the foot up, while every line at
-        that height repeats; the first height that prints anything else ends the run. So a
-        number printed in the same place on two pages of a table is not furniture, and nothing
-        inside a table's cells is.
+        that height repeats; the first height that prints anything else, or the end of the
+        margin, ends the run. So a number printed in the same place on two pages of a table is
+        not furniture, nothing inside a table's cells is, and pages that print the same body
+        text, such as a stack of one-page forms, keep their bodies.
         """
         if self._furniture is None:
-            seen: dict[str, list[tuple[int, float]]] = {}
-            keys = {}
+            heights = {p.number: p.height for p in self.layer.pages}
+            keys = {
+                ln.start: re.sub(r"\d+", "#", normalize_label(self.text(ln.start, ln.end)))
+                for ln in self._lines
+            }
+            at: dict[tuple[str, int], list[float]] = {}
             for ln in self._lines:
-                key = re.sub(r"\d+", "#", normalize_label(self.text(ln.start, ln.end)))
-                keys[ln.start] = key
-                seen.setdefault(key, []).append((ln.box.page, ln.box.y0))
+                at.setdefault((keys[ln.start], ln.box.page), []).append(ln.box.y0)
 
             def repeats(ln: Line) -> bool:
-                key = keys[ln.start]
+                key, page = keys[ln.start], ln.box.page
                 return (
                     bool(key)
                     and self.cell_at(ln.start) is None
                     and any(
-                        abs(page - ln.box.page) == 1 and abs(y - ln.box.y0) < 2
-                        for page, y in seen[key]
+                        abs(y - ln.box.y0) < 2
+                        for near in (page - 1, page + 1)
+                        for y in at.get((key, near), ())
                     )
                 )
 
             out: set[int] = set()
-            pages: dict[int, list[Line]] = {}
-            for ln in self._lines:
-                pages.setdefault(ln.box.page, []).append(ln)
-            for lines in pages.values():
+            for page, lines in self.page_lines.items():
+                margin = heights.get(page, 842.0) / 8
                 bands: list[list[Line]] = []
-                for ln in sorted(lines, key=lambda ln: ln.box.y0):
+                for ln in lines:
                     if bands and ln.box.y0 - bands[-1][0].box.y0 < 2:
                         bands[-1].append(ln)
                     else:
                         bands.append([ln])
-                for order in (bands, bands[::-1]):
+                tops = (b for b in bands if b[0].box.y1 <= margin)
+                feet = (b for b in bands[::-1] if b[0].box.y0 >= heights.get(page, 842.0) - margin)
+                for order in (tops, feet):
                     for band in order:
                         if not all(repeats(ln) for ln in band):
                             break
@@ -266,9 +273,7 @@ class View:
 
     def lines_on(self, page: int) -> list[Line]:
         """The printed lines of `page`, top to bottom."""
-        return sorted(
-            (ln for ln in self.layer.lines if ln.box.page == page), key=lambda ln: ln.box.y0
-        )
+        return self.index.page_lines.get(page, [])
 
     def place(self, words: Iterable[Word]) -> tuple[Span, ...]:
         """`words` as spans of the layer text in reading order: one span for each run of words

@@ -241,8 +241,11 @@ Rows end at a row whose first printed text begins with a `stop` label, on a word
 at the end of the table; in a table without rules, a gap of more than 2.2 line heights also ends
 them. Carried and brought forward lines
 ("Carried forward", "Balance brought forward", "c/f", "continued") are left out, and so are
-running heads, running feet and page numbers. Janus counts a line as furniture when an adjacent
-page prints the same text, digits aside, at the same height, and it is not in a table cell.
+running heads, running feet and page numbers. Janus counts a line as furniture when it lies in
+the top or bottom eighth of the page, an adjacent page prints the same text, digits aside, at the
+same height, and it is not in a table cell; the run of such lines ends at the first height that
+prints anything else. Pages that print the same body text, such as a stack of one-page forms,
+keep their bodies, so the second form's table never reads as the first one's continuation.
 
 Records follow a table onto the next page only when the continuation is certain:
 

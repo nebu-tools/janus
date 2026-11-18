@@ -287,6 +287,21 @@ def test_carried_and_page_furniture_lines_are_left_out():
     assert "'Carried forward' on page 1" in ex.result("x").message
 
 
+def test_pages_that_print_the_same_body_are_not_one_table():
+    # A stack of one-page forms: the same text at the same heights on every page is a body, not
+    # a running head, so the second form's table does not continue the first.
+    def form(n):
+        return [(50, 50, f"Statement {n}"), (50, 300, "Thank you for your order."),
+                (50, 400, "Description"), (300, 400, "Qty"), (50, 430, f"Item {n}"),
+                (300, 430, str(n)), (50, 820, f"Page {n}")]  # fmt: skip
+
+    head = one(drawn(form(1), form(2)), RECORDS)
+    assert head.status == "incomplete" and head.value is None
+    assert "page 2 neither repeats the header" in head.message
+    ex = run(drawn(form(1), form(2)), {**RECORDS, "pages": 1})
+    assert ex.data["x"] == [{"description": "Item 1", "qty": "1"}]
+
+
 def test_a_stop_label_ends_only_on_a_word_boundary():
     layer = drawn([(50, 50, "Description"), (300, 50, "Qty"), (50, 80, "Widget"), (300, 80, "1"),
                    (50, 94, "Subtotalizer"), (300, 94, "2"), (50, 108, "Subtotal"), (300, 108, "3")])  # fmt: skip
