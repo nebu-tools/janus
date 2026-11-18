@@ -212,3 +212,45 @@ def test_continues_takes_header_rows_or_none():
         load_spec({"fields": {"x": {"records": {"header": {"a": "A"}, "continues": form}}}})
     with pytest.raises(SpecError, match=r"records\.continues: expected header, rows or none"):
         load_spec({"fields": {"x": {"records": {"header": {"a": "A"}, "continues": "never"}}}})
+
+
+SPEC_TEXT = """\
+name: Supplier invoice
+fields:
+  number: { label: "Invoice No." }
+  total:
+    label: Total due
+    typ: money GBP
+  lines:
+    records:
+      header: { qty: Qty }
+      continues: never
+  group:
+    fields:
+      inner: { label: X, type: nonsense }
+"""
+
+
+def test_a_spec_error_carries_the_line_of_the_key_it_names():
+    with pytest.raises(SpecError, match="total: unknown key typ") as caught:
+        load_spec(SPEC_TEXT)
+    assert caught.value.line == 6
+    with pytest.raises(SpecError, match=r"lines: records\.continues") as caught:
+        load_spec(SPEC_TEXT.replace("typ:", "type:"))
+    assert caught.value.line == 10
+
+
+def test_spec_error_lines_for_a_group_broken_yaml_and_a_mapping():
+    text = SPEC_TEXT.replace("typ:", "type:").replace("never", "header")
+    with pytest.raises(SpecError, match="group/inner") as caught:
+        load_spec(text)
+    assert caught.value.line == 13
+    with pytest.raises(SpecError, match="not YAML") as caught:
+        load_spec("fields:\n  a: { label: A }\n  b: { label: [ }\n")
+    assert caught.value.line == 3
+    with pytest.raises(SpecError) as caught:
+        load_spec({"fields": {"a": {"labl": "A"}}})
+    assert caught.value.line is None
+    with pytest.raises(SpecError, match="no fields") as caught:
+        load_spec("name: Empty\nfields: {}\n")
+    assert caught.value.line is None

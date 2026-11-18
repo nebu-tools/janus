@@ -395,3 +395,61 @@ def test_a_failed_read_closes_every_document_and_page(report_pdf, monkeypatch):
         PdfiumParser().parse(report_pdf)
     assert len(made) == 7  # the document, three pages and their text pages
     assert all(m.raw is None for m in made)
+
+
+def test_a_read_with_a_cache_goes_on_from_the_pages_already_read(tmp_path, report_pdf, monkeypatch):
+    from janus_pdf.document import engines
+
+    plain = read(report_pdf)
+    real_page_input = engines.pymupdf_page_input
+    seen: list[int] = []
+
+    def stop_at_third(page, *args, **kwargs):
+        if page.number == 2:
+            raise KeyboardInterrupt
+        seen.append(page.number)
+        return real_page_input(page, *args, **kwargs)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", stop_at_third)
+    with pytest.raises(KeyboardInterrupt):
+        read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    assert seen == [0, 1]
+    assert len(list(tmp_path.glob("*.json"))) == 2  # one file for each page read
+
+    def count(page, *args, **kwargs):
+        seen.append(page.number)
+        return real_page_input(page, *args, **kwargs)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", count)
+    resumed = read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    assert seen == [0, 1, 2, 3]  # the two pages read before are not read again
+    assert resumed == plain  # the same layer, with the same ID, as a read without a cache
+    assert len(list(tmp_path.glob("*.json"))) == len(plain.pages)
+
+    monkeypatch.setattr(engines, "pymupdf_page_input", None)  # a third read parses no page
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == plain
+
+
+def test_a_cache_keeps_one_document_and_ignores_a_file_that_is_not_whole(tmp_path, report_pdf):
+    from support import INVOICE
+
+    read(INVOICE, PyMuPDFParser(cache=tmp_path))
+    (invoice_page,) = tmp_path.glob("*.json")
+    read(report_pdf, PyMuPDFParser(cache=tmp_path))
+    assert not invoice_page.exists()  # another document's pages are deleted
+    first = min(tmp_path.glob("*.json"))
+    first.write_bytes(first.read_bytes()[:40])
+    assert read(report_pdf, PyMuPDFParser(cache=tmp_path)) == read(report_pdf)
+
+
+def test_page_count_refuses_what_read_refuses(report_pdf):
+    from janus_pdf import page_count
+    from support import REPORT
+
+    assert page_count(report_pdf) == page_count(REPORT) == 4
+    with pytest.raises(NotAPdf):
+        page_count(b"plain text")
+    doc = pymupdf.open(stream=report_pdf, filetype="pdf")
+    locked = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="u", owner_pw="o")
+    with pytest.raises(EncryptedPdf):
+        page_count(locked)

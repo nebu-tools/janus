@@ -71,8 +71,8 @@ class EmptyPdf(UnreadablePdf):
     """The PDF has no pages."""
 
 
-def _check(pdf: bytes) -> None:
-    """Refuse a file no parser can read completely, before any parser runs."""
+def _check(pdf: bytes) -> int:
+    """Refuse a file no parser can read completely, before any parser runs. Its page count."""
     if not pdf.startswith(b"%PDF-"):
         raise NotAPdf("the file does not start with %PDF-")
     try:
@@ -84,6 +84,16 @@ def _check(pdf: bytes) -> None:
             raise EncryptedPdf("the PDF is encrypted and needs a password to open")
         if doc.page_count == 0:
             raise EmptyPdf("the PDF has no pages")
+        return doc.page_count
+
+
+def page_count(pdf: bytes | Path | str) -> int:
+    """How many pages a PDF (bytes or a path) has, without reading them.
+
+    Raises what `read` raises for a file that cannot be opened: `NotAPdf`, `EncryptedPdf` or
+    `EmptyPdf`.
+    """
+    return _check(pdf if isinstance(pdf, bytes) else Path(pdf).read_bytes())
 
 
 def recipe_hash(recipe: ParserRecipe) -> str:
@@ -173,6 +183,7 @@ __all__ = [
     "layer_of",
     "make_anchor",
     "ocr_available",
+    "page_count",
     "page_words",
     "quote_spans",
     "read",

@@ -54,7 +54,16 @@ from janus_pdf.values import KINDS, PARTS, Kind, ValueType
 
 
 class SpecError(ValueError):
-    """The spec is not valid. The message names the field and the key."""
+    """The spec is not valid. The message names the field and the key.
+
+    `line` is the line of the spec's text the error is on, counted from 1. It is None for a spec
+    given as a mapping and for an error that belongs to no one line, such as a spec without
+    fields.
+    """
+
+    def __init__(self, message: str, line: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +368,7 @@ def _shown(value: Any) -> str:
 def load(source: str | Path | dict[str, Any]) -> Spec:
     """A spec from a YAML or JSON file, a YAML string, or a mapping."""
     raw: Any = source
+    text: str | None = None
     if isinstance(source, (str, Path)):
         text = source.read_text() if isinstance(source, Path) else source
         if isinstance(source, str) and "\n" not in source and Path(source).is_file():
@@ -366,13 +376,51 @@ def load(source: str | Path | dict[str, Any]) -> Spec:
         try:
             raw = yaml.safe_load(text)
         except yaml.YAMLError as exc:
-            raise SpecError(f"the spec is not YAML or JSON: {exc}") from None
-    spec = _validate(_SpecSpec, raw, "the spec")
-    fields = tuple(_fields(spec.fields, ""))
+            mark = getattr(exc, "problem_mark", None)
+            line = mark.line + 1 if mark is not None else None
+            raise SpecError(f"the spec is not YAML or JSON: {exc}", line) from None
+    try:
+        spec = _validate(_SpecSpec, raw, "the spec")
+        fields = tuple(_fields(spec.fields, ""))
+    except SpecError as exc:
+        if text is None:
+            raise
+        raise SpecError(str(exc), _line_of(text, str(exc))) from None
     if not fields:
         raise SpecError("the spec has no fields")
     digest = hashlib.sha256(canonical_json(json.loads(json.dumps(raw)))).hexdigest()
     return Spec(name=spec.name, fields=fields, hash=digest)
+
+
+def _line_of(text: str, message: str) -> int | None:
+    """The line of the key an error message names. A message reads `field/path: key.sub: what`,
+    so this walks the YAML down the field path, then down the keys the message names."""
+    where, _, rest = message.partition(": ")
+    try:
+        node = yaml.compose(text)
+    except yaml.YAMLError:
+        return None
+    line = None
+    steps = (
+        [] if where == "the spec" else [s for part in where.split("/") for s in ("fields", part)]
+    )
+    for i, step in enumerate([*steps, *re.split(r"[.: ]", rest.partition(": ")[0])]):
+        pair = next(
+            (
+                (key, value)
+                for key, value in (node.value if isinstance(node, yaml.MappingNode) else ())
+                if str(key.value) == step
+            ),
+            None,
+        )
+        if pair is None and i < len(steps):
+            return None  # the field is not in the text as the message names it
+        if pair is None:
+            continue  # a word of the message that is no key
+        node = pair[1]
+        if step != "fields" or i >= len(steps):
+            line = pair[0].start_mark.line + 1
+    return line
 
 
 def _fields(raw: dict[str | int, Any], prefix: str):
