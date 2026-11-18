@@ -1,12 +1,12 @@
 """Page images for the workbench viewer and the inspect view.
 
-Pages render unrotated, in the frame the layer's boxes use, so a viewer can lay word boxes over the
-image by multiplying with the scale and turn the whole page by `Page.rotation` itself.
+Pages render as displayed, after /Rotate, which is the frame the layer's boxes use: a viewer lays
+word boxes over the image by multiplying them with the scale.
 """
 
 import pymupdf
 
-RENDERER = f"pymupdf {pymupdf.VersionBind} unrotated png"
+RENDERER = f"pymupdf {pymupdf.VersionBind} displayed png"
 MIN_SCALE = 0.25
 MAX_SCALE = 4.0
 
@@ -18,6 +18,8 @@ def render_png(pdf: bytes, page: int, scale: float) -> bytes:
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
         if not 1 <= page <= doc.page_count:
             raise IndexError(f"page {page} is outside 1..{doc.page_count}")
-        p = doc[page - 1]
-        p.set_rotation(0)
-        return p.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).tobytes("png")
+        return (
+            doc[page - 1]
+            .get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+            .tobytes("png")
+        )

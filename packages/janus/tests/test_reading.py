@@ -6,13 +6,17 @@ import pymupdf
 import pytest
 
 from janus_pdf.document import (
+    EmptyPdf,
+    EncryptedPdf,
     Layer,
     NotAPdf,
     OcrMyPdfParser,
     OcrUnavailable,
     PdfiumParser,
     PyMuPDFParser,
+    UnreadablePdf,
     find_quote,
+    layer_of,
     make_anchor,
     ocr_available,
     read,
@@ -118,7 +122,7 @@ def test_row_spanning_header_cells_and_two_tables_on_a_page(report):
     cells = _cells(report, table3.id)
     measure = cells[0, 0]
     assert _text(report, measure) == "Measure"
-    assert measure.row_span == 2 and measure.header
+    assert measure.row_span == 2 and measure.role == "header"
 
     (span,) = find_quote("0.5 (0.1, 0.9)", report.text)  # body length, riffles, difference
     (ref,) = make_anchor(report, span).cells
@@ -146,6 +150,23 @@ def test_a_ruled_table_whose_first_row_is_a_title(report):
         "604",
         "7.6",
     ]
+    # The title spans the table and heads no column; the row under it is the header.
+    assert (cells[0, 0].role, cells[0, 0].col_span) == ("title", 5)
+    assert [cells[1, c].role for c in range(5)] == ["header"] * 5
+    assert cells[4, 3].header_path == ("EC, µS/cm",)
+    assert cells[1, 3].header_path == ()
+
+
+def test_a_row_label_wider_than_its_column_keeps_to_its_cell(report):
+    """The longest row label of Table 1 reaches past where the next column's values start in
+    other rows; it stays one cell, and the value beside it is the next cell."""
+    table1 = next(t for t in report.tables if t.page == 3)
+    cells = _cells(report, table1.id)
+    label = next(c for c in cells.values() if _text(report, c).startswith("Taxa per sample"))
+    assert (_text(report, label), label.col, label.col_span) == ("Taxa per sample, mean (SD)", 0, 1)
+    value = cells[label.row, 1]
+    assert _text(report, value) == "14.2 (3.1)"
+    assert value.header_path == ("Site A (n = 120)", "Riffle")
 
 
 def test_a_borderless_table_reads_row_by_row(report):
@@ -242,18 +263,36 @@ def test_ocr_gives_the_scanned_page_a_text_layer():
 
 def test_reading_is_deterministic_per_recipe_and_layers_are_immutable(report, report_pdfium):
     again = read(REPORT)
-    assert again == report and again.output_hash == report.output_hash
+    assert again == report and again.id == report.id
     assert again.document_hash == report_pdfium.document_hash
     assert report_pdfium.recipe.engine == "pypdfium2"
-    assert report_pdfium.recipe_hash != report.recipe_hash
-    assert report_pdfium.output_hash != report.output_hash
+    assert report_pdfium.id != report.id
     with pytest.raises(ValueError, match="frozen"):
         report.text = "changed"  # ty: ignore[invalid-assignment]
 
 
+def test_a_layer_is_identified_by_document_recipe_and_output(report_pdf):
+    """Two files that read the same, or one file read the same by two recipes, are not one layer."""
+    doc = pymupdf.open("pdf", report_pdf)
+    doc.set_metadata({"title": "Another title"})
+    retitled = doc.tobytes()
+    same_words = read(retitled)
+    first = read(report_pdf)
+    assert same_words.text == first.text and same_words.words == first.words
+    assert same_words.document_hash != first.document_hash
+    assert same_words.id != first.id
+
+    parser = PyMuPDFParser()
+    raw = parser.parse(report_pdf)
+    other = parser.recipe.model_copy(update={"engine_version": "0"})
+    assert layer_of(report_pdf, raw, other).id != layer_of(report_pdf, raw, parser.recipe).id
+    assert layer_of(report_pdf, raw, parser.recipe).id == first.id
+
+
 def test_recipes_name_what_ran():
     recipe = dict(PyMuPDFParser().recipe.settings)
-    assert recipe["assembly"] == "kittum.documents.layout.v3"
+    assert recipe["assembly"] == "janus.layout.v4"
+    assert recipe["tables"] == "janus.tables.v2"
     assert recipe["triage"].endswith("pymupdf.v1")
     assert dict(PdfiumParser().recipe.settings)["fonts"] == "pdfium.v1"
 
@@ -265,3 +304,94 @@ def test_bytes_that_are_not_a_pdf_are_refused(tmp_path):
     path.write_text("hello")
     with pytest.raises(NotAPdf):
         read(path)
+
+
+def _zero_page_pdf() -> bytes:
+    """A well-formed PDF whose page tree is empty (PyMuPDF refuses to save one)."""
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [] /Count 0 >>"]
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+def _encrypted(pdf: bytes, user_password: str) -> bytes:
+    doc = pymupdf.open("pdf", pdf)
+    return doc.tobytes(
+        encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw="owner", user_pw=user_password
+    )
+
+
+@pytest.mark.parametrize("parser", [PyMuPDFParser(), PdfiumParser()], ids=["pymupdf", "pdfium"])
+def test_files_that_cannot_be_read_completely_are_refused_by_kind(report_pdf, parser):
+    with pytest.raises(EmptyPdf):
+        read(_zero_page_pdf(), parser)
+    with pytest.raises(EncryptedPdf):
+        read(_encrypted(report_pdf, "secret"), parser)
+    with pytest.raises(NotAPdf):
+        read(report_pdf[: len(report_pdf) // 3].replace(b"obj", b"jbo"), parser)
+    for error in (EmptyPdf, EncryptedPdf, NotAPdf):
+        assert issubclass(error, UnreadablePdf)
+    # Encrypted against editing only: it opens without a password and reads like the original.
+    restricted = read(_encrypted(report_pdf, ""), parser)
+    assert squash(restricted.text) == squash(read(report_pdf, parser).text)
+
+
+def test_a_failed_read_closes_every_document_and_page(report_pdf, monkeypatch):
+    """A parser that fails on page 3 still closes what it opened."""
+    from janus_pdf.document import engines
+
+    opened: list = []
+    real_open = pymupdf.open
+
+    def tracked_open(*args, **kwargs):
+        doc = real_open(*args, **kwargs)
+        opened.append(doc)
+        return doc
+
+    def fail_on_third(page, *args, **kwargs):
+        if page.number == 2:
+            raise RuntimeError("broken page")
+        return real_page_input(page, *args, **kwargs)
+
+    real_page_input = engines.pymupdf_page_input
+    monkeypatch.setattr(engines.pymupdf, "open", tracked_open)
+    monkeypatch.setattr(engines, "pymupdf_page_input", fail_on_third)
+    with pytest.raises(RuntimeError, match="broken page"):
+        PyMuPDFParser().parse(report_pdf)
+    assert opened and all(doc.is_closed for doc in opened)
+
+    made: list = []  # every PDFium document, page and text page the parser opened
+    real_doc, real_chars = engines.pypdfium2.PdfDocument, engines._chars_of
+
+    class TrackedDocument(real_doc):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+        def __getitem__(self, i):
+            page = super().__getitem__(i)
+            made.append(page)
+            return page
+
+    def chars_failing_on_third(textpage, left, top):
+        made.append(textpage)
+        if sum(isinstance(m, engines.pypdfium2.PdfPage) for m in made) == 3:
+            raise RuntimeError("broken page")
+        return real_chars(textpage, left, top)
+
+    monkeypatch.setattr(engines.pypdfium2, "PdfDocument", TrackedDocument)
+    monkeypatch.setattr(engines, "_chars_of", chars_failing_on_third)
+    with pytest.raises(RuntimeError, match="broken page"):
+        PdfiumParser().parse(report_pdf)
+    assert len(made) == 7  # the document, three pages and their text pages
+    assert all(m.raw is None for m in made)

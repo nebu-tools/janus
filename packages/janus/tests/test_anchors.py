@@ -17,9 +17,18 @@ from janus_pdf.document import (
     find_quote,
     make_anchor,
     read,
+    render_png,
     resolve,
 )
-from support import COLUMN_BREAK_QUOTE, REPORT, SOFT_HYPHEN_QUOTE, squash, text_layer, text_under
+from support import (
+    COLUMN_BREAK_QUOTE,
+    REPORT,
+    SOFT_HYPHEN_QUOTE,
+    ink,
+    squash,
+    text_layer,
+    text_under,
+)
 
 REPEATED = "1.0 (1.0, 2.0)"  # printed three times in one row of Table 1
 QUOTES = [
@@ -53,7 +62,7 @@ def test_anchors_survive_a_reparse_with_pdfium(report, report_pdfium):
         resolution = resolve(anchor, report_pdfium)
         assert resolution.status == "exact", anchor.quote.exact
         moved = resolution.anchor
-        assert moved is not None and moved.layer == report_pdfium.output_hash
+        assert moved is not None and moved.layer == report_pdfium.id
         assert squash(report_pdfium.text[moved.start : moved.end]) == squash(anchor.quote.exact)
         assert [b.page for b in moved.boxes] == [b.page for b in anchor.boxes]
         for old, new in zip(anchor.boxes, moved.boxes, strict=True):
@@ -99,23 +108,35 @@ def test_pymupdf_and_pdfium_agree_on_every_page(report, report_pdfium):
         assert page.box_iou > 0.9, page
 
 
-def test_turned_pages_read_in_order_with_boxes_in_the_unrotated_frame(report):
+def test_turned_pages_read_in_order_with_boxes_on_the_page_as_displayed(report):
     (span,) = find_quote("412 (34.5%)", report.text)
-    (expected,) = make_anchor(report, span).boxes
+    (upright,) = make_anchor(report, span).boxes
+    # /Rotate 90 turns the page clockwise for display: a point at (x, y) on the A4 page shows at
+    # (842 - y, x) on the landscape screen.
+    expected = (842 - upright.y1, upright.x0, 842 - upright.y0, upright.x1)
 
-    # An upright page the viewer turns with /Rotate 90: boxes stay where they were drawn.
     doc = pymupdf.open(REPORT)
     doc[2].set_rotation(90)
     flagged = doc.tobytes()
-    for layer in (read(flagged, PyMuPDFParser()), read(flagged, PdfiumParser())):
+    scale = 1.0
+    image = render_png(flagged, 3, scale)
+    pixmap = pymupdf.Pixmap(image)
+    assert (pixmap.width, pixmap.height) == (842, 595)
+    layers = [read(flagged, PyMuPDFParser()), read(flagged, PdfiumParser())]
+    for layer in layers:
         page = layer.pages[2]
-        assert (page.rotation, page.width, page.height) == (90, 595.0, 842.0)
+        assert (page.rotation, page.frame, page.width, page.height) == (90, 270, 842.0, 595.0)
+        assert find_quote("EPT individuals, n (%) 412 (34.5%) 298 (27.1%)", layer.text)
         (span,) = find_quote("412 (34.5%)", layer.text)
         (box,) = make_anchor(layer, span).boxes
-        for got, want in zip(
-            box.model_dump().values(), expected.model_dump().values(), strict=True
-        ):
-            assert abs(got - want) < 1.5, layer.recipe.engine
+        got = (box.x0, box.y0, box.x1, box.y1)
+        assert all(abs(g - w) < 1.5 for g, w in zip(got, expected, strict=True)), got
+        assert box.x1 - box.x0 < box.y1 - box.y0  # the turned word stands upright on screen
+        assert ink(image, box, scale) > 0.05, layer.recipe.engine
+        (part,) = make_anchor(layer, Span(span.start, span.start + 2)).boxes  # "41"
+        assert abs(part.y0 - box.y0) < 0.1 and part.y1 < box.y1  # cut along the reading direction
+    for page in compare_layers(*layers):
+        assert page.text_similarity > 0.9 and page.box_iou > 0.9, page
 
     # Landscape pages with the report drawn sideways and no /Rotate: the reader turns their
     # head, and so does the reading order. Columns and table rows still read in order.

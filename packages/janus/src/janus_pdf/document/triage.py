@@ -41,15 +41,20 @@ def triage(pdf: bytes) -> tuple[PageTriage, ...]:
     """One verdict per page: a usable text layer, a scan that needs OCR, or broken encoding."""
     reasons: dict[int, tuple[str, ...]] = {}
     needs_ocr: set[int] = set()
+    failed: tuple[str, ...] = ()
     if pdf_inspector is not None:
-        report = pdf_inspector.process_pdf_bytes(pdf)
-        reasons = {r.page: tuple(r.reasons) for r in report.ocr_reasons_by_page}
-        needs_ocr = set(report.pages_needing_ocr)
+        try:
+            report = pdf_inspector.process_pdf_bytes(pdf)
+        except ValueError as e:  # it refuses some files PyMuPDF reads, such as encrypted ones
+            failed = (f"pdf_inspector_failed:{e}",)
+        else:
+            reasons = {r.page: tuple(r.reasons) for r in report.ocr_reasons_by_page}
+            needs_ocr = set(report.pages_needing_ocr)
     out: list[PageTriage] = []
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
         for page in doc:
             number = page.number + 1  # ty: ignore[unsupported-operator]
-            why = list(reasons.get(number, ()))
+            why = [*failed, *reasons.get(number, ())]
             text = "".join(ch for ch in page.get_text() if not ch.isspace())
             bad = sum(1 for ch in text if _suspicious(ch))
             kind: PageKind = "text"

@@ -5,7 +5,7 @@ description = "PDF evidence: read text and layout, extract typed values with the
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "AGPL-3.0-or-later" }
-authors = [{ name = "Maximilian Scholz", email = "dev.scholz@mailbox.org" }]
+authors = [{ name = "Maximilian Scholz" }]
 dependencies = [
     "pydantic>=2.10",
     "pymupdf>=1.26",

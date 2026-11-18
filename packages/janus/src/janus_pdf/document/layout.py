@@ -1,11 +1,12 @@
 """Canonical text from positioned words, shared by every engine.
 
 An engine hands over each page as blocks of lines of words in the page's reading frame (the
-unrotated page turned so that most text runs left to right; see `reading_frame`), plus table
+displayed page turned so that most text runs left to right; see `reading_frame`), plus table
 grids. The frame follows the text, not /Rotate: a landscape table may be drawn sideways on an
-unrotated page, or upright on a page the viewer turns. This module decides reading order, writes the
-NFC text with its separators, and records every word, line, cell, and page with offsets and
-unrotated boxes. Two engines that read the same characters therefore produce comparable layers.
+unrotated page, or upright on a page the viewer turns. This module decides reading order, writes
+the NFC text with its separators, and records every word, line, cell, and page with offsets and
+boxes on the page as displayed (after /Rotate), the way a reader and a page image see it. Two
+engines that read the same characters therefore produce comparable layers.
 
 Separators: words " ", lines "\\n", blocks "\\n\\n", table cells "\\t", table rows "\\n", pages
 "\\n\\f\\n". `janus_pdf.document.quotes.find_quote` treats all of them as whitespace, so a quote may cross a line,
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 
 from janus_pdf.document.model import (
     Box,
+    CellRole,
     Line,
     Page,
     PageTriage,
@@ -26,8 +28,9 @@ from janus_pdf.document.model import (
     Word,
 )
 
-# v3 adds font size and weight to lines. v1 and v2 were Kittum's.
-ASSEMBLY_VERSION = "kittum.documents.layout.v3"
+# v4 gives boxes on the page as displayed and cell roles. v3 added font size and weight to
+# lines. v1 and v2 were Kittum's.
+ASSEMBLY_VERSION = "janus.layout.v4"
 
 type Rect = tuple[float, float, float, float]
 
@@ -97,7 +100,7 @@ class GridCell:
     rect: Rect
     row_span: int = 1
     col_span: int = 1
-    header: bool = False
+    role: CellRole = "body"
     words: list[PWord] = field(default_factory=list)
 
 
@@ -112,13 +115,13 @@ class Grid:
 
 @dataclass(slots=True)
 class PageInput:
-    """One page's words in its reading frame: the unrotated page turned clockwise by `frame`
+    """One page's words in its reading frame: the page as displayed turned clockwise by `frame`
     degrees so that most text runs left to right. `width` and `height` are that frame's size."""
 
     number: int  # 1-based
     width: float
     height: float
-    rotation: int  # the PDF's /Rotate, passed through for the viewer
+    rotation: int  # the PDF's /Rotate, already applied to the boxes
     blocks: list[PBlock]
     grids: list[Grid] = field(default_factory=list)
     label: str | None = None
@@ -419,7 +422,7 @@ class _Writer:
                         start=cell_start,
                         end=self.pos,
                         box=self.box(page, cell.rect),
-                        header=cell.header,
+                        role=cell.role,
                     )
                 )
         self.tables.append(
@@ -442,7 +445,9 @@ def _with_header_paths(cells: list[TableCell], text: str) -> list[TableCell]:
         by_table.setdefault(cell.table_id, []).append(cell)
     out: list[TableCell] = []
     for table_cells in by_table.values():
-        headers = sorted((c for c in table_cells if c.header), key=lambda c: (c.row, c.col))
+        headers = sorted(
+            (c for c in table_cells if c.role == "header"), key=lambda c: (c.row, c.col)
+        )
         for cell in table_cells:
             path = tuple(
                 " ".join(text[h.start : h.end].split())

@@ -4,12 +4,14 @@
     layer = read(pdf_bytes, PdfiumParser())       # a second engine for differential checks
     anchor = make_anchor(layer, quote_spans(layer.text, "46.15 ± 14.67")[0])
 
-A layer is immutable and identified by content: `output_hash` is the SHA-256 of its canonical JSON.
+A layer is immutable and identified by content: `id` hashes the document, the recipe and the output.
 Re-reading with another engine gives another layer; `resolve` maps an anchor across layers.
 """
 
 import hashlib
 from pathlib import Path
+
+import pymupdf
 
 from janus_pdf.canonical import canonical_json
 from janus_pdf.document.anchors import (
@@ -28,6 +30,7 @@ from janus_pdf.document.model import (
     Anchor,
     Box,
     CellRef,
+    CellRole,
     Layer,
     Line,
     Page,
@@ -49,10 +52,38 @@ from janus_pdf.document.triage import triage
 
 # Kept from Kittum so recipe hashes of stored layers stay valid across the move.
 _RECIPE_DOMAIN = b"kittum.documents.recipe.v1"
+_LAYER_DOMAIN = b"janus.layer.v1"
 
 
-class NotAPdf(ValueError):
-    """The bytes are not a PDF."""
+class UnreadablePdf(ValueError):
+    """The file cannot be read into a layer. Nothing is guessed from it."""
+
+
+class NotAPdf(UnreadablePdf):
+    """The bytes are not a PDF, or a PDF too damaged to open."""
+
+
+class EncryptedPdf(UnreadablePdf):
+    """The PDF is encrypted and opens only with a password."""
+
+
+class EmptyPdf(UnreadablePdf):
+    """The PDF has no pages."""
+
+
+def _check(pdf: bytes) -> None:
+    """Refuse a file no parser can read completely, before any parser runs."""
+    if not pdf.startswith(b"%PDF-"):
+        raise NotAPdf("the file does not start with %PDF-")
+    try:
+        doc = pymupdf.open(stream=pdf, filetype="pdf")
+    except (RuntimeError, ValueError) as e:
+        raise NotAPdf(f"the PDF cannot be opened: {e}") from e
+    with doc:
+        if doc.needs_pass:
+            raise EncryptedPdf("the PDF is encrypted and needs a password to open")
+        if doc.page_count == 0:
+            raise EmptyPdf("the PDF has no pages")
 
 
 def recipe_hash(recipe: ParserRecipe) -> str:
@@ -66,23 +97,32 @@ def document_hash(pdf: bytes) -> str:
     return hashlib.sha256(pdf).hexdigest()
 
 
-def layer_of(pdf: bytes, raw: RawLayer, recipe: ParserRecipe) -> Layer:
-    """A `Layer` from a parser's output, with its hashes."""
+def layer_id(document: str, recipe: ParserRecipe, raw: RawLayer) -> str:
+    """The identity of one recipe's reading of one document: equal only when all three are."""
     body = canonical_json(raw.model_dump(mode="json"))
+    parts = (_LAYER_DOMAIN, document.encode(), recipe_hash(recipe).encode(), body)
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
+
+
+def layer_of(pdf: bytes, raw: RawLayer, recipe: ParserRecipe) -> Layer:
+    """A `Layer` from a parser's output, identified by document, recipe and output."""
+    document = document_hash(pdf)
     return Layer(
-        document_hash=document_hash(pdf),
+        id=layer_id(document, recipe, raw),
+        document_hash=document,
         recipe=recipe,
-        recipe_hash=recipe_hash(recipe),
-        output_hash=hashlib.sha256(body).hexdigest(),
         **{name: getattr(raw, name) for name in RawLayer.model_fields},
     )
 
 
 def read(pdf: bytes | Path | str, parser: Parser | None = None) -> Layer:
-    """Read a PDF (bytes or a path) with `parser`, PyMuPDF by default."""
+    """Read a PDF (bytes or a path) with `parser`, PyMuPDF by default.
+
+    Raises `NotAPdf`, `EncryptedPdf` or `EmptyPdf` (all `UnreadablePdf`) for a file that cannot
+    be read completely. A PDF encrypted only against editing opens without a password and reads.
+    """
     data = pdf if isinstance(pdf, bytes) else Path(pdf).read_bytes()
-    if not data.startswith(b"%PDF-"):
-        raise NotAPdf("the file does not start with %PDF-")
+    _check(data)
     parser = parser or PyMuPDFParser()
     return layer_of(data, parser.parse(data), parser.recipe)
 
@@ -92,9 +132,12 @@ __all__ = [
     "Anchor",
     "Box",
     "CellRef",
+    "CellRole",
     "DifferentDocument",
     "DoclingParser",
     "DoclingUnavailable",
+    "EmptyPdf",
+    "EncryptedPdf",
     "Layer",
     "Line",
     "NotAPdf",
@@ -113,12 +156,14 @@ __all__ = [
     "Table",
     "TableCell",
     "TextQuote",
+    "UnreadablePdf",
     "Word",
     "boxes_for",
     "compare_layers",
     "docling_available",
     "document_hash",
     "find_quote",
+    "layer_id",
     "layer_of",
     "make_anchor",
     "ocr_available",

@@ -1,11 +1,13 @@
 """The document model: what a parser reads from a PDF, and anchors into it.
 
-Offsets are Unicode code points, half-open, over a layer's NFC text. Boxes are in unrotated PDF
-points with the origin at the top-left corner of the crop box. Pages are 1-based.
+Offsets are Unicode code points, half-open, over a layer's NFC text. Boxes are in PDF points on
+the page as displayed, after its /Rotate, with the origin at the displayed crop box's top-left
+corner, so they lie over the page image `render_png` draws. Pages are 1-based.
 
-Everything is identified by content. A document is the SHA-256 of its bytes; a layer is the
-SHA-256 of its canonical JSON (`Layer.output_hash`). An application that stores layers in a
-database keeps its own row identifiers beside these hashes.
+Everything is identified by content. A document is the SHA-256 of its bytes. A layer's `id` is the
+SHA-256 of the document hash, the recipe and the canonical JSON of what the parser read, so two
+layers share an id only when they are the same reading of the same file by the same recipe. An
+application that stores layers in a database keeps its own row identifiers beside these hashes.
 """
 
 from typing import Annotated, Literal, Protocol
@@ -14,6 +16,8 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 PageKind = Literal["text", "ocr", "broken_encoding"]
+# A title row spans the whole table above its header; it heads no column.
+CellRole = Literal["title", "header", "body"]
 ResolutionStatus = Literal["exact", "candidate", "ambiguous", "unresolved"]
 
 
@@ -34,7 +38,7 @@ class ParserRecipe(Record):
 
 
 class Box(Record):
-    """A rectangle on a page, in unrotated points from the crop box's top-left corner."""
+    """A rectangle on a page as displayed, in points from the crop box's top-left corner."""
 
     page: int  # 1-based
     x0: float
@@ -73,10 +77,10 @@ class Page(Record):
     """A page's size and turn, and its slice of the layer text."""
 
     number: int  # 1-based
-    width: float  # unrotated
+    width: float  # as displayed
     height: float
-    rotation: int = 0  # degrees clockwise the viewer turns the page for display
-    frame: int = 0  # degrees clockwise the unrotated page turns so most text reads left to right
+    rotation: int = 0  # the PDF's /Rotate: degrees clockwise the page is turned for display
+    frame: int = 0  # degrees clockwise the displayed page turns so most text reads left to right
     label: str | None = None  # printed page label, when the PDF has one
     start: int  # this page's slice of the layer text
     end: int
@@ -106,7 +110,7 @@ class TableCell(Record):
     start: int  # an empty cell has start == end
     end: int
     box: Box
-    header: bool = False
+    role: CellRole = "body"
     header_path: tuple[str, ...] = ()  # column headers above this cell, outermost first
 
 
@@ -124,10 +128,9 @@ class RawLayer(Record):
 class Layer(Record):
     """One parser recipe's immutable reading of one document."""
 
+    id: Sha256  # SHA-256 of the document hash, the recipe and the RawLayer's canonical JSON
     document_hash: Sha256
     recipe: ParserRecipe
-    recipe_hash: Sha256
-    output_hash: Sha256  # SHA-256 of the canonical JSON of the RawLayer
     text: str
     words: tuple[Word, ...]
     cells: tuple[TableCell, ...] = ()
@@ -158,7 +161,7 @@ class CellRef(Record):
 class Anchor(Record):
     """A span of a layer's text, with the boxes it covers on the page and the cells it touches."""
 
-    layer: Sha256  # the layer's output_hash
+    layer: Sha256  # the layer's id
     document: Sha256
     quote: TextQuote
     start: int

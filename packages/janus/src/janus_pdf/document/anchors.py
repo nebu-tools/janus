@@ -79,7 +79,7 @@ def _part_box(word: Word, start: int, end: int, page: Page | None) -> Box:
     """The box of characters [start, end) of a word, assuming even character widths.
 
     The word is cut along its reading direction: in the page's reading frame, then turned back
-    to the unrotated frame, so a sideways word is cut along its height.
+    to the page as displayed, so a sideways word is cut along its height.
     """
     length = max(word.end - word.start, 1)
     a = (max(start, word.start) - word.start) / length
@@ -172,7 +172,7 @@ def make_anchor(layer: Layer, span: Span) -> Anchor:
         raise ValueError(f"span {span.start}..{span.end} is outside the layer text")
     exact = layer.text[span.start : span.end]
     return Anchor(
-        layer=layer.output_hash,
+        layer=layer.id,
         document=layer.document_hash,
         quote=TextQuote(
             exact=exact,
@@ -337,7 +337,7 @@ def resolve(anchor: Anchor, layer: Layer) -> Resolution:
             f"the anchor is on document {anchor.document[:12]}, "
             f"the layer on document {layer.document_hash[:12]}"
         )
-    if layer.output_hash == anchor.layer:
+    if layer.id == anchor.layer:
         if layer.text[anchor.start : anchor.end] == anchor.quote.exact:
             return result("exact", anchor, "same_layer")
         return result("unresolved", None, "same_layer")

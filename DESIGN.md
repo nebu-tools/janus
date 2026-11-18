@@ -70,9 +70,14 @@ ex = janus_pdf.extract(layer, spec, proposer=None)                         # ext
 checks = janus_pdf.compare(ex, reference, rules={})                        # compare
 ```
 
-- `read` returns a `Layer`. A layer is immutable and content-addressed: its hash comes from the
-  PDF's hash and the parser's recipe. The same PDF and the same parser always give the same
-  layer.
+- `read` returns a `Layer`. A layer is immutable and content-addressed: its `id` is a hash of
+  the PDF's hash, the parser's recipe and everything the parser read. The same PDF and the same
+  parser always give the same layer, and two files that read alike, or one file read by two
+  recipes, never share an id. Anchors, extractions and inspections name their layer by this id.
+- `read` refuses a file it cannot read completely, with an `UnreadablePdf`: `NotAPdf` for bytes
+  that are not a PDF or will not open, `EncryptedPdf` for a PDF that needs a password, and
+  `EmptyPdf` for a PDF with no pages. A PDF encrypted only against editing opens without a
+  password and reads normally.
 - `inspect` returns an `Inspection`: pages, tables with their first rows, headings, and every
   place a phrase is printed. It tells a spec author what each locator will see.
 - `extract` returns an `Extraction`. `ex.data` is the nested output: a field that is not
@@ -94,17 +99,37 @@ data and no server.
 A `Layer` holds the whole document as one string, `text`, and typed views into that string:
 
 - `pages`, `words`, `lines`, `blocks`, `tables` and `cells`. Each has `start` and `end` offsets
-  into `text`, and words, lines and cells also have boxes in PDF points.
+  into `text`, and words, lines and cells also have boxes in PDF points. Boxes are on the page
+  as displayed, after its `/Rotate`, measured from the top-left corner, so they lie over the
+  image `render_png` draws. `Page.width` and `Page.height` are the displayed size. Words read in
+  the direction the text runs, which `Page.frame` gives as the turn from the displayed page.
 - Separators in `text` show the structure: a space between words, `\n` between lines, `\n\n`
   between blocks, `\t` between cells, `\n` between table rows and `\n\f\n` between pages.
 - A `Line` has `size`, the largest font size on the line in points, and `bold`, which is true when
   every word on the line is bold. Janus finds headings with these two values. Box heights do not
   track font size closely enough.
-- A `TableCell` has its row, column, spans and `header_path`: the header cells above it, from the
-  top. Nested headers give paths like `("Site B", "n = 355")`.
+- A `TableCell` has its row, column, spans, a `role` and `header_path`: the header cells above
+  it, from the top. Nested headers give paths like `("Site B", "n = 355")`. The role is `title`,
+  `header` or `body`. A title is a leading row whose one cell spans the whole table, such as
+  "Purchase order PO-7731" over the column headers; it heads no column. The header starts at the
+  first row after any titles. So `cell`, `label` with `column`, and `records` all see the same
+  header row.
+
+### Table cells
+
+In a fully ruled table the rules decide the cells. PyMuPDF's `find_tables` gives the cell boxes
+the rules enclose, and Janus takes the grid from them, merged cells included; the words only fill
+the cells. A ruled table with a caption is still read from its rules.
+
+A three-rule table, found from its "Table N" caption and the rules under it, gets its grid from
+its words. Columns are the x-ranges that most rows leave empty, and each boundary sits where the
+fewest words reach into that range. In the body every word belongs to the column under its
+centre, so a row label wider than its column, like "Taxa per sample, mean (SD)", stays one cell
+beside its value. A header phrase spans the columns it crosses up to the column where the next
+phrase in its row starts.
 
 An `Anchor` points at a stretch of text. It holds the offsets, a quote with context, one box per
-printed line, the table cells, and the document and layer hashes. `resolve` re-finds the quote in
+printed line, the table cells, the document hash and the layer id. `resolve` re-finds the quote in
 a new layer by exact match, then by context, then by a fuzzy match of at least 90 for quotes of
 20 characters or more. It reports `exact`, `candidate`, `ambiguous` or `unresolved`.
 
@@ -133,8 +158,9 @@ PyMuPDF decides it. On the test report and on a 10-page journal article the two 
 every heading's size and weight.
 
 `ASSEMBLY_VERSION` names the layout algorithm and is part of every recipe. Bump it when layout
-output changes. The current version, `layout.v3`, adds font size and weight to lines. All layer
-hashes from v2 change. The recipe also names what triage ran: with the `triage` extra it records
+output changes. The current version, `janus.layout.v4`, gives boxes on the page as displayed and
+cell roles; `layout.v3` added font size and weight to lines. `TABLES_VERSION` names the table
+grid rules the same way. Layer ids change with either. The recipe also names what triage ran: with the `triage` extra it records
 the pdf-inspector version, and without it only the PyMuPDF check, so the two never share a hash.
 
 ## The spec format
@@ -330,7 +356,8 @@ the two apart.
 - The model: `Layer`, `Page`, `Word`, `Line`, `Table`, `TableCell`, `Box`, `Anchor`, `CellRef`,
   `RawLayer`, `ParserRecipe`.
 - Parsing: `PyMuPDFParser`, `PdfiumParser`, `DoclingParser`, `OcrMyPdfParser`, `triage`,
-  `recipe_hash`, `document_hash`, `NotAPdf`.
+  `recipe_hash`, `document_hash`, `layer_id`, `UnreadablePdf`, `NotAPdf`, `EncryptedPdf`,
+  `EmptyPdf`.
 - Anchors: `make_anchor`, `quote_spans`, `resolve`, `compare_layers`, `page_words`, `boxes_for`.
 - Pages: `render_png`.
 - Extraction: `load_spec`, `extract`, `Proposal`, `Proposer`, `compare`.
