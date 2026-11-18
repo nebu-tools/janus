@@ -119,12 +119,18 @@ def read(pdf: bytes | Path | str, parser: Parser | None = None) -> Layer:
     """Read a PDF (bytes or a path) with `parser`, PyMuPDF by default.
 
     Raises `NotAPdf`, `EncryptedPdf` or `EmptyPdf` (all `UnreadablePdf`) for a file that cannot
-    be read completely. A PDF encrypted only against editing opens without a password and reads.
+    be read completely, including one whose pages the parser cannot load whole. A PDF encrypted only against editing opens without a password and reads.
     """
     data = pdf if isinstance(pdf, bytes) else Path(pdf).read_bytes()
     _check(data)
     parser = parser or PyMuPDFParser()
-    return layer_of(data, parser.parse(data), parser.recipe)
+    try:
+        raw = parser.parse(data)
+    except UnreadablePdf:
+        raise
+    except Exception as exc:  # a parser's own error on a damaged file
+        raise NotAPdf(f"the PDF cannot be read: {exc}") from exc
+    return layer_of(data, raw, parser.recipe)
 
 
 __all__ = [

@@ -2,16 +2,20 @@
 a page back with a different engine."""
 
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pymupdf
 import pypdfium2
 
-from janus_pdf.document import Box, Layer, ParserRecipe, RawLayer, layer_of
+from janus_pdf.document import Box, Layer, ParserRecipe, PyMuPDFParser, RawLayer, layer_of, read
 from janus_pdf.document.layout import PageInput, PBlock, PWord, assemble
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REPORT = FIXTURES / "survey-report.pdf"  # made by fixtures/make_fixtures.py
+INVOICE = FIXTURES / "invoice.pdf"  # labels and borderless line items
+ORDER = FIXTURES / "purchase-order.pdf"  # a ruled table under a title row
+INSPECTION = FIXTURES / "inspection-report.pdf"  # repeated headings, an "n/a" cell
 GUTTER = 297.5  # between the two columns of the report's page 2
 
 # A paragraph that runs from the foot of page 2's left column to the top of its right column,
@@ -105,3 +109,38 @@ def text_layer(text: str, *, name: str = "text", pdf: bytes = b"%PDF-1.7 fake") 
     """A one-page layer of `text` laid out by `TextParser`, as a layer of the PDF `pdf`."""
     parser = TextParser([text], name=name)
     return layer_of(pdf, parser.parse(pdf), parser.recipe)
+
+
+LEDGER = FIXTURES / "stock-ledger.pdf"  # a ruled table over three pages
+PACKING = FIXTURES / "packing-list.pdf"  # the header Item / Qty printed again, five ways
+CELLS = FIXTURES / "header-cells.pdf"  # body rows that print the header's words
+
+Item = (
+    tuple[float, float, str]
+    | tuple[float, float, str, float]
+    | tuple[float, float, str, float, bool]
+)
+
+
+def drawn(
+    *pages: Sequence[Item],
+    rules: Mapping[int, Sequence[tuple[float, float, float, float]]] | None = None,
+    rotation: int = 0,
+) -> Layer:
+    """A layer read with PyMuPDF from an A4 PDF of `pages`, each a list of (x, baseline y, text),
+    (x, y, text, font size) or (x, y, text, font size, bold), in Helvetica. `rules` draws lines (x0, y0, x1, y1) on a page by
+    its number; `rotation` turns every page, with the text placed in unrotated coordinates."""
+    doc = pymupdf.open()
+    for number, items in enumerate(pages, start=1):
+        page = doc.new_page(width=595, height=842)
+        for item in items:
+            x, y, text, *style = item
+            size, bold = style[0] if style else 11, len(style) > 1 and bool(style[1])
+            page.insert_text((x, y), text, fontsize=size, fontname="hebo" if bold else "helv")
+        for x0, y0, x1, y1 in (rules or {}).get(number, []):
+            page.draw_line((x0, y0), (x1, y1), width=0.6)
+        if rotation:
+            page.set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    return read(data, PyMuPDFParser())
