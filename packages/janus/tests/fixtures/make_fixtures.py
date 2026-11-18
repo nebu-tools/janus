@@ -1,4 +1,5 @@
-"""Build the test PDFs in this directory.
+"""Build the test PDFs in this directory: a survey report, an invoice, a purchase order and an
+inspection report.
 
     uv run python tests/fixtures/make_fixtures.py
 
@@ -395,5 +396,156 @@ def report() -> None:
     w.save(HERE / "survey-report.pdf", REPORT)
 
 
+# --- The invoice --------------------------------------------------------------------------------
+
+SELLER = "Hollin Tool Supply Ltd"
+# Description, quantity, unit price, amount. The amounts add up to the subtotal.
+INVOICE_ROWS = [
+    ("Steel widget, 40 mm", "120", "£1.25", "£150.00"),
+    ("Brass hinge, pair", "40", "£3.50", "£140.00"),
+    ("Hex bolt M8, box of 50", "6", "£9.25", "£55.50"),
+    ("Assembly, hours", "6", "£29.50", "£177.00"),
+]
+
+
+def _right(w: Writer, page: pymupdf.Page, x1: float, y: float, text: str, **kw) -> None:
+    w.text(page, x1 - w.width(text, kw.get("size", BODY), kw.get("bold", False)), y, text, **kw)
+
+
+def invoice() -> None:
+    """One page, no rules: labels set off by a colon or a column gap, and borderless line items
+    followed by totals."""
+    w = Writer()
+    page = w.page()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    w.text(page, x0, 80, SELLER, size=16, bold=True)
+    w.lines(page, x0, 98, ["12 Forge Street, Hollin", "accounts@hollin-tools.example"], size=8.5)
+    _right(w, page, x1, 80, "INVOICE", size=16, bold=True)
+    y = 150.0
+    for label, value in (("Invoice No.", "2026-0451"), ("Date", "12 March 2026")):
+        w.text(page, x0, y, label, bold=True)
+        w.text(page, x0 + 90, y, value)
+        y += LEADING
+    w.lines(page, x0, y, ["Customer: Blue Fern Studio", "Due: 11/04/2026"])
+
+    cols = [x0, x0 + 250, x0 + 330]  # description, qty, unit price; amount is right-aligned
+    y = 240.0
+    for x, head in zip(cols, ("Description", "Qty", "Unit price"), strict=True):
+        w.text(page, x, y, head, bold=True)
+    _right(w, page, x1, y, "Amount", bold=True)
+    y += 16
+    for description, qty, unit, amount in INVOICE_ROWS:
+        for x, value in zip(cols, (description, qty, unit), strict=True):
+            w.text(page, x, y, value)
+        _right(w, page, x1, y, amount)
+        y += LEADING
+    y += 6
+    for label, amount, bold in (
+        ("Subtotal", "£522.50", False),
+        ("VAT (20%)", "£104.50", False),
+        ("Total due: £627.00", "", True),
+    ):
+        w.text(page, cols[2], y, label, bold=bold)
+        if amount:
+            _right(w, page, x1, y, amount)
+        y += LEADING
+    w.lines(page, x0, y + 30, ["Payment within 30 days to the account shown on our website."])
+    w.save(HERE / "invoice.pdf", f"{SELLER} invoice 2026-0451")
+
+
+# --- The purchase order -------------------------------------------------------------------------
+
+# Code, description, quantity, unit price, amount, in German number format.
+ORDER_ROWS = [
+    ("TR-220", "Torque wrench", "2", "412,25 €", "824,50 €"),
+    ("TR-118", "Pipe threader", "1", "1.085,50 €", "1.085,50 €"),
+    ("CB-005", "Cable box", "10", "12,40 €", "124,00 €"),
+    ("SV-CAL", "Calibration service", "1", "350,00 €", "350,00 €"),
+]
+
+
+def purchase_order() -> None:
+    """One page with a fully ruled table whose first row is a title, so the header is row 2."""
+    w = Writer()
+    page = w.page()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    w.text(page, x0, 80, "Kestrel Fabrication GmbH", size=16, bold=True)
+    w.lines(
+        page,
+        x0,
+        110,
+        ["Order date 9 March 2026", "Due date 11 April 2026", "Supplier: " + SELLER],
+    )
+    xs = [x0, x0 + 70, x0 + 230, x0 + 280, x0 + 380, x1]
+    top, row = 170.0, 16.0
+    rows = 2 + len(ORDER_ROWS)
+    bottom = top + rows * row
+    for r in range(rows + 1):
+        w.rule(page, x0, x1, top + r * row)
+    for i, x in enumerate(xs):
+        w.vrule(page, x, top if i in (0, len(xs) - 1) else top + row, bottom)
+    w.text(page, x0 + 4, top + 11.5, "Purchase order PO-7731", bold=True)
+    for x, head in zip(xs, ("Code", "Description", "Qty", "Unit price", "Amount"), strict=False):
+        w.text(page, x + 4, top + row + 11.5, head, size=8.5, bold=True)
+    for r, values in enumerate(ORDER_ROWS, start=2):
+        for x, value in zip(xs, values, strict=False):
+            w.text(page, x + 4, top + r * row + 11.5, value, size=8.5)
+    y = bottom + 24
+    for label, amount in (
+        ("Net total", "2.384,00 €"),
+        ("VAT 19%", "452,96 €"),
+        ("Amount due", "2.836,96 €"),
+    ):
+        w.text(page, xs[3], y, label, bold=label == "Amount due")
+        _right(w, page, x1, y, amount)
+        y += LEADING
+    w.save(HERE / "purchase-order.pdf", "Purchase order PO-7731")
+
+
+# --- The inspection report ----------------------------------------------------------------------
+
+# Element, condition, rating. A rating the inspector could not give is printed "n/a".
+CONDITION_ROWS = [
+    ("Bearings", "Light corrosion", "3"),
+    ("Deck joint", "Not reachable", "n/a"),
+    ("Parapet", "Sound", "1"),
+]
+
+
+def inspection_report() -> None:
+    """One page whose sections repeat an unnumbered heading, "Findings", under two parents, and
+    whose ruled condition table prints "n/a" for one rating."""
+    w = Writer()
+    page = w.page()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    w.text(page, x0, 80, "Mill Lane Footbridge Inspection", size=16, bold=True)
+    y = w.lines(page, x0, 104, ["Inspection date: 2 March 2026", "Inspected by: J. Marsh"])
+    for side, finding in (
+        ("North abutment", "Hairline cracks in the wing wall, no wider than 0.2 mm."),
+        ("South abutment", "Scour below the toe, about 150 mm deep at the downstream corner."),
+    ):
+        y = _h1(w, page, x0, y + 14, side)
+        y = w.lines(page, x0, y, ["The abutment was inspected from the bank and from a ladder."])
+        y = _h2(w, page, x0, y + 8, "Findings")
+        y = w.lines(page, x0, y, [finding])
+    y = _h1(w, page, x0, y + 14, "Condition ratings")
+    xs = [x0, x0 + 140, x0 + 320, x1]
+    top, row = y, 16.0
+    rows = 1 + len(CONDITION_ROWS)
+    for r in range(rows + 1):
+        w.rule(page, x0, x1, top + r * row)
+    for x in xs:
+        w.vrule(page, x, top, top + rows * row)
+    for x, head in zip(xs, ("Element", "Condition", "Rating"), strict=False):
+        w.text(page, x + 4, top + 11.5, head, size=8.5, bold=True)
+    for r, values in enumerate(CONDITION_ROWS, start=1):
+        for x, value in zip(xs, values, strict=False):
+            w.text(page, x + 4, top + r * row + 11.5, value, size=8.5)
+    w.save(HERE / "inspection-report.pdf", "Mill Lane Footbridge Inspection")
+
+
 if __name__ == "__main__":
     report()
+    invoice()
+    purchase_order()
+    inspection_report()

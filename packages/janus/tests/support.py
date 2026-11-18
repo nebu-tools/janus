@@ -12,6 +12,9 @@ from janus_pdf.document.layout import PageInput, PBlock, PWord, assemble
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REPORT = FIXTURES / "survey-report.pdf"  # made by fixtures/make_fixtures.py
+INVOICE = FIXTURES / "invoice.pdf"  # labels and borderless line items
+ORDER = FIXTURES / "purchase-order.pdf"  # a ruled table under a title row
+INSPECTION = FIXTURES / "inspection-report.pdf"  # repeated headings, an "n/a" cell
 GUTTER = 297.5  # between the two columns of the report's page 2
 
 # A paragraph that runs from the foot of page 2's left column to the top of its right column,
