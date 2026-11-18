@@ -1,0 +1,51 @@
+[project]
+name = "janus-workbench"
+version = "0.1.0.dev0"
+description = "A local web app for looking at what Janus reads from a PDF and for writing specs against it"
+requires-python = ">=3.13"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Maximilian Scholz" }]
+dependencies = [
+    "fastapi>=0.115",
+    "janus-pdf",
+    "uvicorn>=0.32",
+]
+
+[project.scripts]
+janus-workbench = "janus_workbench.cli:main"
+
+[dependency-groups]
+dev = ["httpx2>=1.0", "pytest>=8.3", "ruff>=0.9", "ty>=0.0.1a0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/janus_workbench"]
+# The built client. `pnpm build` in ../web writes it; git ignores it.
+artifacts = ["src/janus_workbench/static/**"]
+
+[tool.uv.sources]
+janus-pdf = { path = "../../../packages/janus", editable = true }
+
+[tool.ruff]
+extend = "../../../packages/janus/pyproject.toml"
+src = ["src", "tests"]
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic and FastAPI read annotations at runtime.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+runtime-evaluated-decorators = ["dataclasses.dataclass"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["janus_workbench", "janus_pdf"]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.rules]
+unused-ignore-comment = "ignore"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
