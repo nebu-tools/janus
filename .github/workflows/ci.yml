@@ -1,14 +1,9 @@
 name: Janus
 
-# Markdown alone runs nothing; "Run workflow" runs it by hand.
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - "**/*.md"
   pull_request:
-    paths-ignore:
-      - "**/*.md"
   workflow_dispatch:
 
 permissions:
@@ -20,51 +15,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  typescript:
-    name: TypeScript (format, lint, typecheck, tests, build)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: .
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-        # @janus/server is a Python workspace; its checks need uv and run in the python job.
-      - run: bun run check --filter='!@janus/server'
-
-  format:
-    name: Format (prettier)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    defaults:
-      run:
-        working-directory: .
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: bun run format:check
-
-  python:
-    name: Python (ruff format, ruff check, ty, pytest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: apps/server
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --all-extras
-      - run: uv run --no-sync ruff format --check src tests
-      - run: uv run --no-sync ruff check src tests
-      - run: uv run --no-sync ty check src
-      - run: uv run --no-sync pytest
-
   janus-pdf:
     name: janus-pdf (ruff format, ruff check, ty, pytest)
     runs-on: ubuntu-latest
@@ -79,48 +29,40 @@ jobs:
           enable-cache: true
         # Docling pulls in torch and model weights; its tests skip without it.
       - run: uv sync --locked --extra triage
-      - run: uv run --no-sync ruff format --check src tests scripts
-      - run: uv run --no-sync ruff check src tests scripts
-      - run: uv run --no-sync ty check src tests scripts
-      - run: uv run --no-sync pytest
+      - run: uv run ruff format --check src tests scripts
+      - run: uv run ruff check src tests scripts
+      - run: uv run ty check src tests scripts
+      - run: uv run pytest
 
-  cohort-example:
-    name: Cohort-report example (downloaded from public source)
+  examples:
+    name: Examples (the commands in the READMEs print what the READMEs show)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: apps/server
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --all-extras
-      - run: uv run --no-sync python scripts/fetch_cohort_example.py
-      - run: uv run --no-sync pytest tests/test_downloaded_example.py -q
-
-  browser:
-    name: Browser (extraction and comparison workflows)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      JANUS_DATA_DIR: /tmp/janus-browser
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: .
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
       - uses: astral-sh/setup-uv@v5
-      - run: bun install --frozen-lockfile
-      - run: uv sync --project apps/server --extra dev
-      - run: cd apps/web && bunx playwright install --with-deps chromium
-      - run: bun run test:e2e
-      - uses: actions/upload-artifact@v4
-        if: failure()
         with:
-          name: browser-failures
-          path: |
-            apps/web/test-results
-            apps/web/playwright-report
+          enable-cache: true
+      - run: uv sync --locked --project packages/janus
+      - run: uv run --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
+      - run: uv run --project packages/janus ruff check --config packages/janus/pyproject.toml examples
+      - run: uv run --project packages/janus pytest examples
+      - run: uv run --project packages/janus python examples/check_readme.py README.md examples/README.md
+      - name: Rebuild the examples; fail when a committed file differs
+        working-directory: examples
+        run: |
+          uv run --project ../packages/janus python make_examples.py
+          git status --porcelain .
+          test -z "$(git status --porcelain .)"
+
+  install:
+    name: Install (the checkout installs without extras, and janus runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uvx --isolated --from ./packages/janus janus --help

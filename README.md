@@ -1,63 +1,132 @@
 # Janus
 
-<img align="right" src="assets/branding/janus-logo.webp" alt="Janus logo: two watercolor profiles and a J inside a golden hexagon" width="160" height="160">
+<img align="right" src="assets/branding/janus-logo.webp" alt="Janus logo: a badger with round spectacles lifts a number seven off a sheet of paper and drops it into a jam jar labelled seven" width="160" height="160">
 
-Extract structured data from PDFs using their text and layout. Define the fields you need,
-inspect their source locations, then export the data or compare it with a reference dataset.
-Janus runs locally. It does not send documents to a model or OCR scanned pages.
+Janus reads values from PDFs: dates, amounts, counts and the rows of tables. You write a short
+YAML file, the spec, that names each value, says where it is printed and gives its type. Janus
+returns each value with the page and the box it was printed in, so a person or a program can
+check it against the page. When a value is not printed in exactly one place, or does not read as
+its type, Janus gives no value and says why.
 
 <br clear="right">
 
-## Start the workbench
+## Status
 
-Install Bun and uv, then run from this directory:
+| Part | State |
+| --- | --- |
+| The library `janus_pdf` | Works. It reads PDFs that have a text layer, extracts by spec and compares with reference data. |
+| The command `janus` | Works: `inspect`, `extract` and `compare`. |
+| The workbench, a web app for writing specs against the page | Being rebuilt. Nothing of it is in this repository yet. |
+| PyPI | Not published. Install from this repository. |
 
-```bash
-bun install --frozen-lockfile
-cp apps/server/.env.example apps/server/.env
-bun run dev
+Scanned pages need `ocrmypdf` installed, and tables without rules in complex layouts need the
+`docling` extra. Both are optional.
+
+## Install
+
+Janus needs Python 3.13 or later. With [uv](https://docs.astral.sh/uv/):
+
+```sh
+# the command
+uv tool install "janus-pdf @ git+https://github.com/nebu-tools/janus#subdirectory=packages/janus"
+
+# the library, in a project
+uv add "janus-pdf @ git+https://github.com/nebu-tools/janus#subdirectory=packages/janus"
 ```
 
-Open [localhost:3002](http://localhost:3002). Choose **Try purchase order** to run the bundled
-example, or upload a PDF and an extraction specification. Select a field to highlight its
-source on the PDF. Switch to JSON to inspect the nested output.
+## A first spec
 
-- **Export data** saves the nested values for your own tools.
-- **Export with evidence** includes field statuses, source locations, and document identity.
-- **Specification** lets you edit the saved specification and extract again as a separate run.
-- **Compare data** checks the saved extraction against JSON, CSV, or XLSX reference data.
+[examples/invoice/document.pdf](examples/invoice/document.pdf) is a one-page invoice. This spec,
+[examples/invoice/spec.yaml](examples/invoice/spec.yaml), reads its number, its dates, its line
+items and its totals:
 
-Missing, ambiguous, and invalid fields remain visible. Inspect unresolved fields before using
-the exported data. Completed extractions are saved locally and can be reopened after a restart.
-Comparison previews stay in the current tab; export them to retain the results.
-
-## Use the library or CLI
-
-The extraction engine works without the web server, reference data, or a review record.
-From `apps/server`:
-
-```bash
-uv run janus extract ../../examples/purchase-order/document.pdf \
-  ../../examples/purchase-order/extraction.json > extraction.json
-uv run janus compare extraction.json ../../examples/purchase-order/reference.json \
-  ../../examples/purchase-order/checks.json
+```yaml
+name: Workshop invoice
+fields:
+  number: { label: "Invoice No." }
+  date: { label: Date, type: date }
+  customer: { label: Customer }
+  due: { label: Due, type: date DD/MM/YYYY }
+  lines:
+    records:
+      header: { description: Description, qty: Qty, unit_price: Unit price, amount: Amount }
+      stop: [Subtotal]
+    columns: { qty: integer, unit_price: money GBP, amount: money GBP }
+  subtotal: { label: Subtotal, type: money GBP }
+  vat: { label: VAT (20%), type: money GBP }
+  total: { label: Total due, type: money GBP }
 ```
 
-Read the [structured extraction guide](docs/structured-extraction.md) for nested objects,
-record tables, numeric formats, exit codes, and the Python interface.
+From a clone of this repository:
 
-## Guides
+```console
+$ janus extract examples/invoice/spec.yaml examples/invoice/document.pdf
+extracted   number                     p1   "LC-2026-0318"
+extracted   date                       p1   "2026-05-14"
+extracted   customer                   p1   "Tern Street Riders"
+extracted   due                        p1   "2026-06-13"
+extracted   lines                      p1   [{"description": "Wheel truing", "qty": 4, "unit_price": {"…
+                                            4 rows under the header on page 1
+extracted   subtotal                   p1   {"amount": "326.00", "currency": "GBP"}
+extracted   vat                        p1   {"amount": "65.20", "currency": "GBP"}
+extracted   total                      p1   {"amount": "391.20", "currency": "GBP"}
+24 extracted
+```
 
-- [Structured extraction](docs/structured-extraction.md): specification, outputs, library, and CLI.
-- [Locate PDF content](docs/locators.md): tables, labeled text, and prose sections.
-- [Examples](examples/README.md): ready-to-run inputs.
-- [Server setup and checks](apps/server/README.md): configuration, storage, and development.
-- [How it works](DESIGN.md): extraction, comparison, and persistence.
+`--cells` lists every cell of the line items, and `--json` before the command prints every value
+with its boxes. `compare` checks the extraction against reference data. Its last lines:
 
-The **Comparison reviews** page retains the existing three-input workflow and saved reviews.
-Its [comparison specification](docs/comparison-specification-v1.md), [repeated-row rules](docs/repeated-rows.md),
-and [authoring skill](skills/schema-authoring/SKILL.md) remain available.
+```console
+$ janus compare examples/invoice/spec.yaml examples/invoice/document.pdf examples/invoice/reference.json | tail -n 3
+match         total/amount                   expected "391.20", got "391.20"  difference 0.00, tolerance 0
+match         total/currency                 expected "GBP", got "GBP"
+34 match
+```
 
-Janus depends on readable PDF text and recoverable layout. It does not infer arbitrary record
-identity across datasets, evaluate formulas, or answer free-text questions. Specifications are
-JSON documents; the workbench can edit and rerun them.
+[examples](examples/README.md) has two more documents, one of them a table that runs over three
+pages, and shows `inspect`.
+
+## Reference
+
+- [packages/janus/README.md](packages/janus/README.md): the spec format, the locators, the value
+  types, the command and the library.
+- [DESIGN.md](DESIGN.md): how Janus reads a page, the rule a value must meet to count as
+  extracted, and the plan for the workbench.
+
+## Development
+
+CI runs these checks. Run them before you push.
+
+```sh
+cd packages/janus
+uv sync --locked --extra triage
+uv run ruff format --check src tests scripts
+uv run ruff check src tests scripts
+uv run ty check src tests scripts
+uv run pytest
+
+cd ../..
+uv sync --locked --project packages/janus   # without the extra, as the READMEs' output is
+uv run --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
+uv run --project packages/janus ruff check --config packages/janus/pyproject.toml examples
+uv run --project packages/janus pytest examples
+uv run --project packages/janus python examples/check_readme.py README.md examples/README.md
+uvx --isolated --from ./packages/janus janus --help   # a clean install without extras
+
+cd examples
+uv run --project ../packages/janus python make_examples.py
+git status --porcelain .   # empty when the committed examples are what the script writes
+```
+
+`examples/check_readme.py` runs the commands this README and the examples README show. It fails
+when a command prints something else, exits with another status, or when this block names a
+command that CI does not run.
+
+## Name and logo
+
+Janus is the Roman god with two faces. One looks at the page and one at the data. The logo is a
+stand-in sketch until a hand-painted one replaces it.
+
+## Licence
+
+[AGPL-3.0-or-later](LICENSE).

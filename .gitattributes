@@ -4,6 +4,8 @@
 # Binaries — never touch.
 *.pdf binary
 *.png binary
+*.webp binary
 *.jpg binary
 *.ico binary
 *.woff2 binary
+*.ttf binary

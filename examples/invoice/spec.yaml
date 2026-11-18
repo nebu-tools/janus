@@ -1,0 +1,14 @@
+name: Workshop invoice
+fields:
+  number: { label: "Invoice No." }
+  date: { label: Date, type: date }
+  customer: { label: Customer }
+  due: { label: Due, type: date DD/MM/YYYY }
+  lines:
+    records:
+      header: { description: Description, qty: Qty, unit_price: Unit price, amount: Amount }
+      stop: [Subtotal]
+    columns: { qty: integer, unit_price: money GBP, amount: money GBP }
+  subtotal: { label: Subtotal, type: money GBP }
+  vat: { label: VAT (20%), type: money GBP }
+  total: { label: Total due, type: money GBP }
