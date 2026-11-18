@@ -1,73 +1,424 @@
-# How Janus works
+# Janus design
+
+Janus reads PDFs and extracts typed values with evidence. Each value comes with the place where it
+is printed, so a person or a program can check it against the page. Janus has three parts:
+
+- `janus-pdf`, a Python library with no web framework. Other programs, Kittum among them, import
+  it.
+- `janus`, a command-line program in the same package.
+- The workbench, a small web app on top of the library. It writes specs and shows evidence.
+
+The core is deterministic. A language model, a vision model or Docling can propose a value for a
+field that the deterministic layer cannot find. Janus accepts a proposal only when it finds the
+proposed text on the page and that text parses to the proposed value.
 
 ```mermaid
 flowchart LR
-    P[PDF] --> R[Read text and layout]
-    S[Extraction specification] --> E[Extract and parse]
-    R --> E
-    E --> D[Structured data and evidence]
-    D --> J[JSON or database loader]
-    D --> I[Inspect PDF evidence]
-    D --> C[Compare]
-    T[Reference data and rules] --> C
+    PDF --> R[read] --> L[Layer]
+    S[Spec] --> X[extract]
+    L --> X
+    P[Proposer, optional] -.-> X
+    X --> E[Extraction: values, statuses, anchors]
+    E --> C[compare]
+    Ref[Reference data and rules] --> C
+    L --> I[inspect]
 ```
 
-## Extraction
+## Package layout
 
-`janus.extraction.extract(document, specification)` returns nested data and field results.
-The reader recovers PDF text and tables. Scalar locators reuse the existing extraction
-algorithms through a plan containing only extraction fields. Object fields preserve nesting;
-record fields associate cells by their physical table row and select columns by header alias.
-Typed parsing belongs to extraction. Numeric separator conventions are explicit, and decimals
-remain exact strings in JSON. Missing, ambiguous, and invalid values retain an issue and source
-location when available.
+```text
+packages/janus/                 distribution janus-pdf, import name janus_pdf
+  src/janus_pdf/
+    __init__.py                 the public interface below, and nothing else
+    document/                   PDF to Layer: the document model, engines, anchors
+      model.py                  Layer, Page, Word, Line, Table, TableCell, Box, Anchor
+      engines.py                PyMuPDFParser, PdfiumParser
+      layout.py                 words to lines, blocks and reading order
+      tables.py                 ruled-table detection and cell text
+      triage.py                 which pages have usable text (pdf-inspector, optional)
+      docling.py                DoclingParser (optional extra)
+      ocr.py                    OcrMyPdfParser (needs the ocrmypdf command)
+      anchors.py, quotes.py     anchors, quote search, re-anchoring
+      render.py                 page images that boxes fit over
+    values.py                   value types and strict parsing
+    spec.py                     the spec format: load and validate
+    _index.py                   per-layer index: label matching, headings, suggestions
+    _locate.py                  the five locators, records included
+    extract.py                  the extracted rule, the proposer seam, extract()
+    compare.py                  the comparator
+    inspect.py                  the inspect view, as data
+    output.py                   text and JSON output for the CLI
+    cli.py                      janus inspect | extract | compare
+    canonical.py                RFC 8785 canonical JSON for hashes
+  tests/                        fixtures/make_fixtures.py builds the test PDFs
+  scripts/benchmark.py          timings on a generated 100-page document
+apps/workbench/                 FastAPI server and React client; depends on janus-pdf only
+```
 
-Field paths are JSON Pointers into the output. They remain the same when a locator changes.
-Record paths use array indexes in document order; they do not establish identity across runs.
-The result also carries the specification hash and document hash. The library writes no files
-and needs no reference data, review metadata, or running server.
+The library depends on pydantic, PyMuPDF, pypdfium2, rapidfuzz and PyYAML. Docling,
+pdf-inspector and OCR are optional. Janus never imports Kittum.
 
-`janus.extraction.compare(result, reference, rules)` checks saved output against independent
-reference data. It neither reads the PDF nor changes the extraction. Each rule explicitly pairs
-an output pointer with a reference pointer. The CLI exposes both operations.
+## Public interface
 
-## Workbench
+```python
+import janus_pdf
 
-The home page accepts a PDF and an extraction specification. The server runs the extraction in
-a worker thread and returns the completed result. It writes the document, specification, and
-result in a temporary directory, then renames the directory to publish a complete run under
-`JANUS_DATA_DIR/extractions`. Failed runs do not appear in history. An interrupted run is not
-resumed; leftover temporary directories are hidden from history. The response waits for the
-operation to finish. The browser does not create a second progress state.
+layer = janus_pdf.read(path_or_bytes, parser=janus_pdf.PyMuPDFParser())  # open
+view = janus_pdf.inspect(layer, page=None, find=None, rows=3)              # inspect
+spec = janus_pdf.load_spec(path_or_text_or_dict)                           # raises SpecError
+ex = janus_pdf.extract(layer, spec, proposer=None)                         # extract
+checks = janus_pdf.compare(ex, reference, rules={})                        # compare
+```
 
-The workbench puts data beside the PDF. Selecting a field shows its page and overlays its source
-rectangle when available. Extraction and page previews use unrotated PDF coordinates; the
-original PDF stays unchanged. Pages are rendered on demand from the saved PDF, with a maximum long
-edge of 1800 pixels. Text values remain available beside the image. On narrow screens the source
-pane follows the data pane. Editing a specification creates a new run and preserves the old one.
-Comparison previews stay in the browser tab and can be exported; they do not alter saved data.
+- `read` returns a `Layer`. A layer is immutable and content-addressed: its hash comes from the
+  PDF's hash and the parser's recipe. The same PDF and the same parser always give the same
+  layer.
+- `inspect` returns an `Inspection`: pages, tables with their first rows, headings, and every
+  place a phrase is printed. It tells a spec author what each locator will see.
+- `extract` returns an `Extraction`. `ex.data` is the nested output: a field that is not
+  extracted is `None`. `ex.fields` holds one `FieldResult` per field, with its status, value,
+  printed text, anchor, method, message, candidates and suggestions. `ex.result(path)` returns
+  one result.
+- `compare` returns a list of `Check`. Each check has a path, a status, the expected and actual
+  values, a message and an anchor.
+- `janus_pdf.resolve(anchor, layer)` finds an anchor again in another layer of the same document.
+  `janus_pdf.render_png(pdf, page, scale)` renders a page image; boxes times `scale` fit over it.
 
-## Existing comparison reviews
+The library writes no files, starts no threads and keeps no global state, except caches of the
+most recent layer's lookups and index. Each cache is one immutable value replaced in a single
+assignment, so threads that read different layers at worst rebuild it. It needs no reference
+data and no server.
 
-The three-input comparison workflow remains at `/compare`. It compiles reference pointers,
-reads evidence, extracts fields, and compares them. Extraction does not consult expected values.
-Reviews move through `created`, `validating_inputs`, `reading_document`, `extracting_fields`,
-`comparing`, and `ready`, or end in `error`. The browser reads that state from review metadata.
-Versioned plan, evidence, extraction, and result artifacts remain compatible with saved reviews.
+## The document model
 
-Evidence is cached by document hash; extraction is cached by document and extraction hashes.
-Changing only reference data reuses both caches. The legacy comparison specification hash is
-part of field identity, so changing that specification invalidates extraction reuse. Reviewer
-corrections change the review's extraction and result while leaving the shared cache intact.
+A `Layer` holds the whole document as one string, `text`, and typed views into that string:
 
-`not_compared` means Janus could not compare a field. `ambiguous` means it could not select one
-extraction. Neither establishes that the PDF disagrees with the reference. A reviewer records
-decisions in the resolution menu and can export a review as CSV or JSON.
+- `pages`, `words`, `lines`, `blocks`, `tables` and `cells`. Each has `start` and `end` offsets
+  into `text`, and words, lines and cells also have boxes in PDF points.
+- Separators in `text` show the structure: a space between words, `\n` between lines, `\n\n`
+  between blocks, `\t` between cells, `\n` between table rows and `\n\f\n` between pages.
+- A `Line` has `size`, the largest font size on the line in points, and `bold`, which is true when
+  every word on the line is bold. Janus finds headings with these two values. Box heights do not
+  track font size closely enough.
+- A `TableCell` has its row, column, spans and `header_path`: the header cells above it, from the
+  top. Nested headers give paths like `("Site B", "n = 355")`.
 
-## Cache compatibility
+An `Anchor` points at a stretch of text. It holds the offsets, a quote with context, one box per
+printed line, the table cells, and the document and layer hashes. `resolve` re-finds the quote in
+a new layer by exact match, then by context, then by a fuzzy match of at least 90 for quotes of
+20 characters or more. It reports `exact`, `candidate`, `ambiguous` or `unresolved`.
 
-Bump `MACHINE_CACHE_REVISION` in `artifact_store.py` when legacy reader or extractor behavior
-changes, including dependency or configuration changes that affect output. One revision covers
-both stages because extraction depends on evidence. Changes only to comparison rules need no bump.
-New revisions ignore old shared caches without deleting them. Saved artifacts and reviewer
-decisions remain readable. Standalone extraction currently reads each document afresh.
+### Engines
+
+An engine turns one PDF page into words, boxes, font sizes and ruled tables. The layout code
+turns those into lines, blocks and reading order. The engines are:
+
+| Engine           | Use                                     | Font sizes                   | Tables           |
+| ---------------- | --------------------------------------- | ---------------------------- | ---------------- |
+| `PyMuPDFParser`  | Default for documents with a text layer | Yes                          | Ruled tables     |
+| `PdfiumParser`   | Second opinion; about twice as fast     | Yes                          | No               |
+| `DoclingParser`  | Tables without rules, complex layouts   | From PyMuPDF                 | Docling's tables |
+| `OcrMyPdfParser` | Scanned pages                           | From PyMuPDF on the OCR text | Ruled tables     |
+
+Docling and OCR plug in at the page level. `DoclingParser` keeps PyMuPDF's words and replaces
+the tables with Docling's table regions and grids. `OcrMyPdfParser` runs `ocrmypdf` to add a text
+layer and then reads the result with PyMuPDF. `triage` decides per page whether the text layer is
+usable. A parser's recipe records its name, version, settings and model weights hash, so layers
+from different engines never share a hash.
+
+PyMuPDF gives each span's size and flags. PDFium gives each character's `Tf` size, which Janus
+scales by the character's text matrix, because many producers set `Tf 1` and scale with the
+matrix. Bold comes from the font weight, the ForceBold flag or the font name, in that order, as
+PyMuPDF decides it. On the test report and on a 10-page journal article the two engines agree on
+every heading's size and weight.
+
+`ASSEMBLY_VERSION` names the layout algorithm and is part of every recipe. Bump it when layout
+output changes. The current version, `layout.v3`, adds font size and weight to lines. All layer
+hashes from v2 change. The recipe also names what triage ran: with the `triage` extra it records
+the pdf-inspector version, and without it only the PyMuPDF check, so the two never share a hash.
+
+## The spec format
+
+A spec is YAML or JSON. It names fields, says where each field is printed, and says what type
+each value has. A person can read and write it by hand.
+
+```yaml
+name: Supplier invoice
+fields:
+  number: { label: Invoice number }
+  issued: { label: Invoice date, type: date }
+  due: { label: Due date, type: date DD/MM/YYYY }
+  total: { label: Amount due, type: "money EUR 1.234,56" }
+  shipping:
+    fields:
+      method: { label: Ship via }
+      weight: { label: Gross weight, type: decimal }
+  items:
+    records:
+      header: { code: Code, qty: Qty, amount: Amount }
+      stop: [Subtotal]
+    columns: { qty: integer, amount: "money EUR 1.234,56" }
+  terms: { section: Payment terms, under: Conditions }
+  stamp: { region: { page: 1, box: [400, 40, 560, 90] } }
+  rate_b: { cell: { table: p2t0, row: 4, column: 2 }, type: percent }
+```
+
+Quote a type that contains a comma inside `{…}`, because YAML splits a flow mapping at commas.
+A group holds its own `fields:`, and its fields get paths like `shipping/method`. Record cells have paths like `items/2/qty`. Unknown
+keys, a field with no locator or with two locators, and a bad type all fail when the spec loads.
+The error names the field and the key.
+
+### Locators
+
+Each field has exactly one locator:
+
+- `label: Text` reads the value printed after a label. `label: [Text, Other text]` accepts several
+  names. In a table, add `column: Header` to read the cell in that column on the label's row. The
+  column must equal one of the headers in the cell's header path.
+- `cell: {table, row, column}` reads one cell by position. `inspect` lists table IDs.
+- `records: {header, stop}` reads a table as a list of objects. `header` maps output keys to
+  printed headers. The header can be any row of a ruled table, or a printed row of words when the
+  table has no rules. Rows stop at a large vertical gap or at a row that begins with a `stop`
+  label.
+- `section: Heading` reads the text under a heading up to the next heading of the same or higher
+  rank. `under: Parent` picks one heading when the document uses the same heading twice.
+- `region: {page, box}` reads the words inside a box, in PDF points from the top left.
+
+`pages: 3` or `pages: 3-5` limits any locator to those pages.
+
+### How a label matches
+
+Janus normalizes labels and page text in the same way: NFKC, case folding, single spaces, one
+kind of dash, and no trailing colon. Then:
+
+1. The label must begin a printed line or a table cell and end at a word boundary. "Total" does
+   not match the middle of "Grand total".
+2. In a table, the label must equal the whole cell. A label that is only the start of a cell, like
+   "Age" for "Age at screening, yr", gives a suggestion, not a value.
+3. Outside a table, the value is the rest of the line. If the rest of the line is empty, the value
+   is the words to the right on the same visual row, then the next line.
+4. A value on the label's own line must be set off from the label by a colon or by a gap wider
+   than 0.8 times the line height. Without one, a text field gets a suggestion and no value.
+   "Due" in "Due date 11 April 2026" therefore never returns "date 11 April 2026".
+5. Janus uses fuzzy matching only when nothing matches. It scores the opening words of each line
+   and cell with rapidfuzz and returns up to three suggestions of 75 or more. A suggestion is
+   never a value.
+
+### Value types
+
+A type is a short string or a mapping:
+
+```yaml
+type: date DD/MM/YYYY
+type: money EUR 1.234,56
+type: count_percent count # read "12 (34.5%)", keep 12
+type: { kind: date, formats: ["D. MMMM YYYY"], locale: de }
+type: { kind: integer, absent: ["NR", "n/a", "—"] }
+```
+
+| Kind                | Printed                                            | Value                                                    |
+| ------------------- | -------------------------------------------------- | -------------------------------------------------------- |
+| `text`              | `Blue Fern Studio`                                 | `"Blue Fern Studio"`                                     |
+| `integer`           | `1,234`                                            | `1234`                                                   |
+| `decimal`           | `1.234,56` with `1.234,56`                         | `"1234.56"`                                              |
+| `percent`           | `41.1%`                                            | `"41.1"`                                                 |
+| `date`              | `12 March 2026`, or `11/04/2026` with `DD/MM/YYYY` | `"2026-03-12"`                                           |
+| `money`             | `£627.00`                                          | `{"amount": "627.00", "currency": "GBP"}`                |
+| `count_percent`     | `12 (34.5%)`                                       | `{"count": 12, "percent": "34.5"}`                       |
+| `mean_sd`           | `46.2 ± 14.7` or `46.2 (14.7)`                     | `{"mean": "46.2", "sd": "14.7"}`                         |
+| `estimate_interval` | `1.42 (1.10 to 1.83)`                              | `{"estimate": "1.42", "lower": "1.10", "upper": "1.83"}` |
+| `p_value`           | `P < 0.001`                                        | `{"comparator": "<", "value": "0.001"}`                  |
+
+A compound kind followed by a part name keeps only that part.
+
+Parsing is strict. The whole printed text must parse, or the field is `invalid`. Decimals are
+strings, so `"627.00"` keeps its printed precision and no float rounding can occur. Dates are ISO
+strings. Other rules:
+
+- The number format is a sample: `1,234.56`, `1.234,56`, `1 234,56` or `1234.56`.
+- A numeric date needs a declared format, because the page does not say whether `11/04/2026` is
+  in April or November.
+- `$` needs a declared currency, because many currencies use it. A printed currency that differs
+  from the declared one is an error.
+- Janus checks what it can: an estimate must lie inside its interval, a percent must be between 0
+  and 100, a p-value between 0 and 1, and a standard deviation must not be negative.
+- `absent` lists printed markers that mean "no value". The default is `NR`, `N/A`, `not reported`
+  and a lone dash. A marker gives an extracted `None` with a note.
+
+## Statuses and evidence
+
+Each field result has one status:
+
+| Status        | Meaning                                                              |
+| ------------- | -------------------------------------------------------------------- |
+| `extracted`   | The value meets the extracted rule.                                  |
+| `missing`     | The locator found nothing. Suggestions may follow.                   |
+| `ambiguous`   | The locator found several places that disagree. Each is a candidate. |
+| `invalid`     | The locator found text, and the text does not parse as the type.     |
+| `unconfirmed` | A proposer gave a value, and Janus could not confirm it on the page. |
+
+The extracted rule: a field is `extracted` only when all three of these are true:
+
+1. The locator found one place, or several places whose parsed values are equal.
+2. The whole printed text at that place parses as the field's type.
+3. Janus can make an anchor with at least one box for that text.
+
+Every other result has a value of `None`. `ex.data` therefore contains only values that meet the
+rule. A program that reads `ex.data` cannot get an unchecked value by mistake.
+
+Messages tell the author what to change: "2 places disagree: p3 …, p4 …; say which with
+`under:` 'Methods' or 'Results'", or "'11/04/2026' is a numeric date; declare its format, such as
+DD/MM/YYYY or MM/DD/YYYY".
+
+## The proposer seam
+
+```python
+class Proposer(Protocol):
+    name: str
+    def propose(self, layer: Layer, field: Field, result: FieldResult) -> Proposal | None: ...
+
+@dataclass(frozen=True)
+class Proposal:
+    value: Any               # what the proposer thinks the value is
+    quote: str               # the printed text it read the value from
+    context: str = ""        # nearby printed text, to choose between repeated quotes
+    page: int | None = None
+    note: str = ""
+```
+
+`extract` asks the proposer only about fields that are not extracted, and passes it the failed
+result. Janus confirms a proposal in this order:
+
+1. It searches for `quote` in the layer, by whole tokens. The search must give exactly one place.
+   If the quote is printed more than once, `context` and `page` must narrow it to one.
+2. The quote must parse, whole, as the field's type.
+3. The parsed value must equal the proposed value.
+
+A confirmed proposal is `extracted`, with method `proposed:<name>` and an anchor. Any other
+proposal is `unconfirmed`. Its value stays out of `ex.data`, and the message gives the reason
+and the status before the proposal. In the tests, a proposal for a VAT amount under a wrong label
+is confirmed. A numeric date with no declared format, an invented order number and a misquoted
+customer name stay unconfirmed.
+
+A proposer needs three things from Janus: the layer text or page images, the field's path, type
+and locator, and the failed result with its suggestions. It must return the printed quote, not
+only the value. A proposer can be a language model given the page text, a vision model given
+`render_png` images, or Docling's key-value output. Janus ships no proposer. The workbench and
+Kittum supply their own.
+
+## The comparator
+
+`compare(extraction, reference, rules)` checks reference data against an extraction. It does not
+read the PDF.
+
+- The comparator walks every leaf of the reference and looks at the same path in `ex.data`.
+  Reference data can leave out fields.
+- `rules` maps path patterns (`fnmatch`, like `items/*/amount`) to `tolerance` (absolute),
+  `relative`, or `text: exact | casefold | spacing`.
+- Values compare as numbers only when the extracted value is an integer or a canonical decimal
+  string. A text field that prints `0451` is never equal to the number 451.
+- Statuses: `match`, `mismatch` and `not_extracted`. A reference path that the spec does not
+  have, or a field whose status is not `extracted`, gives `not_extracted`. It is never a match.
+  Each check carries the field's anchor.
+
+## What Kittum imports
+
+Kittum depends on `janus-pdf` and imports from `janus_pdf` and `janus_pdf.document`. Kittum
+already depends on the old Janus server, whose import name is `janus`; the new import name keeps
+the two apart.
+
+- The model: `Layer`, `Page`, `Word`, `Line`, `Table`, `TableCell`, `Box`, `Anchor`, `CellRef`,
+  `RawLayer`, `ParserRecipe`.
+- Parsing: `PyMuPDFParser`, `PdfiumParser`, `DoclingParser`, `OcrMyPdfParser`, `triage`,
+  `recipe_hash`, `document_hash`, `NotAPdf`.
+- Anchors: `make_anchor`, `quote_spans`, `resolve`, `compare_layers`, `page_words`, `boxes_for`.
+- Pages: `render_png`.
+- Extraction: `load_spec`, `extract`, `Proposal`, `Proposer`, `compare`.
+
+Kittum keeps what needs its database or the network: `store.py` (`ingest`, `derive`,
+`get_document`, `get_layer`, `get_anchor`, `save_anchor`) and `acquisition.py`. Both call Janus
+for the PDF work. Kittum's language-model extraction becomes a `Proposer`, so every value it
+reports is confirmed against the page.
+
+Layer and anchor JSON stays compatible, with one exception: `layout.v3` changes layer hashes.
+Kittum re-derives stored layers when it first reads one with an old recipe. Anchors survive
+through `resolve`.
+
+### Migration order
+
+1. Janus releases `janus-pdf` with the document layer, values, spec, extract, compare and the CLI.
+   Its tests include the ported document tests.
+2. A Kittum pull request adds the dependency, deletes `src/kittum/documents/` except `store.py`
+   and `acquisition.py`, deletes `extraction/janus_path.py`, and changes imports. Kittum's
+   document tests run against Janus.
+3. Janus deletes the old engine and apps after the workbench runs on `janus-pdf`.
+
+## The workbench
+
+The workbench is a FastAPI server and a React client. It has no extraction logic of its own: each
+endpoint calls one library function. It stores documents, layers, specs and runs on disk under
+`JANUS_DATA_DIR`, keyed by hash.
+
+Screens:
+
+- **Documents.** Upload or drop PDFs. Each row shows pages, engine, tables found and read time.
+- **Inspect.** Page images with words, lines, headings and tables drawn on them. Each table
+  shows its ID and first rows. A search box shows every place a phrase is printed, and whether
+  it begins a line or a cell, because a label must.
+- **Spec editor.** The YAML on the left. The page and the results on the right. Each edit runs
+  `extract` on the open document after 300 ms without typing. The library reuses the layer and
+  its index, so a spec on 100 pages takes under 100 ms. Each field shows its status, value and
+  message, and clicking it shows its anchor boxes on the page. Load errors appear on their line.
+- **Click to locate.** Click a word on the page and the editor proposes locators for it: `label`
+  when a label is printed before it, `cell` and `label` with `column` in a table, `records` for a
+  table header, and `region` as a last choice. The author picks one, and the preview runs.
+- **Runs.** One spec over many documents, a row per document and a column per field. Long
+  documents and big batches show progress per page while the server reads them. Reading runs in
+  a worker process. The client polls one status endpoint, and a read that stops can restart
+  because each page's output is cached by hash.
+- **Compare.** Upload reference data and rules. Each check links to its anchor.
+
+## The CLI
+
+```bash
+janus inspect FILE.pdf [--page N] [--find TEXT] [--rows N]
+janus extract SPEC FILE.pdf [--cells]
+janus compare SPEC FILE.pdf REFERENCE [--rules RULES]
+```
+
+`--engine pymupdf|pdfium` chooses the engine. `--json` prints JSON. `extract` exits with 0 when
+every field is extracted. `compare` exits with 0 when every check matches. Both exit with 1
+otherwise, and with 2 for bad input. The text output gives one line per field: status, path,
+page, value, then the message and suggestions on the next lines.
+
+## Performance
+
+| Step                                     | Target            | Measured in the spike                                        |
+| ---------------------------------------- | ----------------- | ------------------------------------------------------------ |
+| Read, PyMuPDF, born-digital              | ≤ 0.25 s per page | 0.15–0.19 s per page (10 pages); 0.20 s per page (100 pages) |
+| Read, PDFium                             | ≤ 0.1 s per page  | 0.07 s per page                                              |
+| Build the index, 100 pages               | ≤ 0.5 s           | 0.39 s                                                       |
+| Extract one spec, 100 pages, first spec  | ≤ 0.5 s           | 0.34 s                                                       |
+| Extract one spec, 100 pages, later specs | ≤ 100 ms          | 46 ms                                                        |
+| Extract one spec, 1–10 pages             | ≤ 200 ms          | 7–165 ms                                                     |
+
+The old engine took 13.6–18.1 s to read and extract the 10-page article.
+
+`scripts/benchmark.py` measures these steps on a generated 100-page document and prints them
+beside the targets. `pytest -m benchmark` runs the same steps as tests that fail at twice the
+target. The default suite deselects them, because wall-clock times on a shared CI runner or a
+busy laptop say little. The default suite guards against algorithmic regressions instead: it
+asserts that several extractions on one layer build its index once. Read time depends mostly on
+PyMuPDF. Layout assembly and hashing take about 40% of it, and that share is the place to
+optimize first.
+
+## Out of scope
+
+- Writing to PDFs, filling forms and redaction.
+- Handwriting recognition, and OCR other than through `ocrmypdf`.
+- A built-in language-model proposer, prompts or model routing.
+- Learning specs from examples. Click to locate proposes locators, and a person chooses them.
+- Review workflows, reviewer decisions and comparison reviews. These go with the old app.
+- A database. The library keeps nothing, and the workbench uses files.
+- Identity of records across runs. `items/2` is the third row in document order, nothing more.
+- Kittum-specific storage, acquisition and schemas.
