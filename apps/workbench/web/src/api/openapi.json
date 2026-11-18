@@ -1,0 +1,1344 @@
+{
+  "components": {
+    "schemas": {
+      "Box": {
+        "additionalProperties": false,
+        "description": "A rectangle on a page as displayed, in points from the crop box's top-left corner.",
+        "properties": {
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "x0": {
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "page",
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "Box",
+        "type": "object"
+      },
+      "CandidateOut": {
+        "properties": {
+          "boxes": {
+            "items": {
+              "$ref": "#/components/schemas/Box"
+            },
+            "title": "Boxes",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "printed": {
+            "title": "Printed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "printed",
+          "boxes"
+        ],
+        "title": "CandidateOut",
+        "type": "object"
+      },
+      "DocumentRow": {
+        "description": "One document in the list, and how far reading it has come.",
+        "properties": {
+          "added": {
+            "title": "Added",
+            "type": "string"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "layer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pages"
+          },
+          "pages_read": {
+            "default": 0,
+            "title": "Pages Read",
+            "type": "integer"
+          },
+          "read_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Seconds"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "status": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "reading",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "added"
+        ],
+        "title": "DocumentRow",
+        "type": "object"
+      },
+      "ExtractIn": {
+        "properties": {
+          "spec": {
+            "description": "the spec's YAML text",
+            "maxLength": 200000,
+            "title": "Spec",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "title": "ExtractIn",
+        "type": "object"
+      },
+      "ExtractOut": {
+        "description": "Either the spec did not load (`problem`) or every field has a result.",
+        "properties": {
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FieldOut"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpecProblem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ExtractOut",
+        "type": "object"
+      },
+      "FieldOut": {
+        "description": "One field's outcome. A record's cells follow it as `lines/0/qty` and so on.",
+        "properties": {
+          "boxes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Box"
+            },
+            "title": "Boxes",
+            "type": "array"
+          },
+          "candidates": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CandidateOut"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "printed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Printed"
+          },
+          "status": {
+            "enum": [
+              "extracted",
+              "missing",
+              "ambiguous",
+              "incomplete",
+              "invalid",
+              "unconfirmed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "path",
+          "status"
+        ],
+        "title": "FieldOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Heading": {
+        "description": "A line the `section` locator treats as a heading.",
+        "properties": {
+          "bold": {
+            "title": "Bold",
+            "type": "boolean"
+          },
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "number"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "size",
+          "bold",
+          "text",
+          "box"
+        ],
+        "title": "Heading",
+        "type": "object"
+      },
+      "Hit": {
+        "description": "One line or cell a searched phrase is printed in.",
+        "properties": {
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "cell": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cell"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "starts_line": {
+            "title": "Starts Line",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "text",
+          "box",
+          "starts_line",
+          "cell"
+        ],
+        "title": "Hit",
+        "type": "object"
+      },
+      "Inspection": {
+        "description": "A layer as the locators see it: pages, tables, headings, and where a phrase is.",
+        "properties": {
+          "document": {
+            "title": "Document",
+            "type": "string"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "headings": {
+            "items": {
+              "$ref": "#/components/schemas/Heading"
+            },
+            "title": "Headings",
+            "type": "array"
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/Hit"
+            },
+            "title": "Hits",
+            "type": "array"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageSummary"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/TableSummary"
+            },
+            "title": "Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document",
+          "layer",
+          "engine",
+          "pages",
+          "tables",
+          "headings",
+          "hits"
+        ],
+        "title": "Inspection",
+        "type": "object"
+      },
+      "Line": {
+        "additionalProperties": false,
+        "description": "One printed line, or one line inside a table cell.",
+        "properties": {
+          "bold": {
+            "default": false,
+            "title": "Bold",
+            "type": "boolean"
+          },
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "box"
+        ],
+        "title": "Line",
+        "type": "object"
+      },
+      "PageLayout": {
+        "description": "What the layer holds for one page: the boxes the Inspect screen draws.",
+        "properties": {
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/TableCell"
+            },
+            "title": "Cells",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/Line"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/Table"
+            },
+            "title": "Tables",
+            "type": "array"
+          },
+          "words": {
+            "items": {
+              "$ref": "#/components/schemas/WordOut"
+            },
+            "title": "Words",
+            "type": "array"
+          }
+        },
+        "required": [
+          "page",
+          "words",
+          "lines",
+          "tables",
+          "cells"
+        ],
+        "title": "PageLayout",
+        "type": "object"
+      },
+      "PageSummary": {
+        "description": "One page: its size in points as displayed, how its text was obtained, how many words it\nhas, and its tables.",
+        "properties": {
+          "height": {
+            "title": "Height",
+            "type": "number"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tables",
+            "type": "array"
+          },
+          "width": {
+            "title": "Width",
+            "type": "number"
+          },
+          "words": {
+            "title": "Words",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number",
+          "width",
+          "height",
+          "kind",
+          "words",
+          "tables"
+        ],
+        "title": "PageSummary",
+        "type": "object"
+      },
+      "SpecIn": {
+        "properties": {
+          "text": {
+            "maxLength": 200000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SpecIn",
+        "type": "object"
+      },
+      "SpecOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "text"
+        ],
+        "title": "SpecOut",
+        "type": "object"
+      },
+      "SpecProblem": {
+        "properties": {
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "SpecProblem",
+        "type": "object"
+      },
+      "SpecRow": {
+        "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "saved": {
+            "title": "Saved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "hash",
+          "saved"
+        ],
+        "title": "SpecRow",
+        "type": "object"
+      },
+      "Table": {
+        "additionalProperties": false,
+        "description": "A table found on a page, and its slice of the layer text.",
+        "properties": {
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "box",
+          "rows",
+          "cols",
+          "start",
+          "end"
+        ],
+        "title": "Table",
+        "type": "object"
+      },
+      "TableCell": {
+        "additionalProperties": false,
+        "description": "One cell of a table: its grid position, spans, text slice, box and headers.",
+        "properties": {
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "col": {
+            "title": "Col",
+            "type": "integer"
+          },
+          "col_span": {
+            "default": 1,
+            "title": "Col Span",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "header_path": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Header Path",
+            "type": "array"
+          },
+          "role": {
+            "default": "body",
+            "enum": [
+              "title",
+              "header",
+              "body"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "row": {
+            "title": "Row",
+            "type": "integer"
+          },
+          "row_span": {
+            "default": 1,
+            "title": "Row Span",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "table_id": {
+            "title": "Table Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table_id",
+          "row",
+          "col",
+          "start",
+          "end",
+          "box"
+        ],
+        "title": "TableCell",
+        "type": "object"
+      },
+      "TableSummary": {
+        "description": "One table: its ID for `cell` locators, its size, and the text of its first rows.",
+        "properties": {
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "preview": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Preview",
+            "type": "array"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "rows",
+          "cols",
+          "preview"
+        ],
+        "title": "TableSummary",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WordOut": {
+        "properties": {
+          "box": {
+            "$ref": "#/components/schemas/Box"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "box"
+        ],
+        "title": "WordOut",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Janus workbench",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/documents": {
+      "get": {
+        "description": "Every document with its status. The client polls this while any is being read.",
+        "operationId": "list_documents",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentRow"
+                  },
+                  "title": "Response List Documents",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Documents"
+      },
+      "post": {
+        "description": "Take a PDF as the request body and queue it for reading.\n\nA file that is not a readable PDF is kept too: its row says why it failed.",
+        "operationId": "add_document",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "default": "document.pdf",
+              "maxLength": 300,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/pdf": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentRow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "description": "The file is larger than the limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Document"
+      }
+    },
+    "/api/documents/{document}": {
+      "delete": {
+        "operationId": "delete_document",
+        "parameters": [
+          {
+            "description": "SHA-256 of the PDF",
+            "in": "path",
+            "name": "document",
+            "required": true,
+            "schema": {
+              "description": "SHA-256 of the PDF",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Document",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Document"
+      }
+    },
+    "/api/documents/{document}/extract": {
+      "post": {
+        "description": "Run a spec, given as text, against the document.",
+        "operationId": "extract_document",
+        "parameters": [
+          {
+            "description": "SHA-256 of the PDF",
+            "in": "path",
+            "name": "document",
+            "required": true,
+            "schema": {
+              "description": "SHA-256 of the PDF",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Document",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Extract Document"
+      }
+    },
+    "/api/documents/{document}/inspect": {
+      "get": {
+        "description": "Pages, tables with their first rows, headings, and where `find` is printed.",
+        "operationId": "inspect_document",
+        "parameters": [
+          {
+            "description": "SHA-256 of the PDF",
+            "in": "path",
+            "name": "document",
+            "required": true,
+            "schema": {
+              "description": "SHA-256 of the PDF",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Document",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "find",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Find"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inspection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect Document"
+      }
+    },
+    "/api/documents/{document}/pages/{page}": {
+      "get": {
+        "operationId": "page_layout",
+        "parameters": [
+          {
+            "description": "SHA-256 of the PDF",
+            "in": "path",
+            "name": "document",
+            "required": true,
+            "schema": {
+              "description": "SHA-256 of the PDF",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Document",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageLayout"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Page Layout"
+      }
+    },
+    "/api/documents/{document}/pages/{page}/image": {
+      "get": {
+        "operationId": "page_image",
+        "parameters": [
+          {
+            "description": "SHA-256 of the PDF",
+            "in": "path",
+            "name": "document",
+            "required": true,
+            "schema": {
+              "description": "SHA-256 of the PDF",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Document",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "pixels per point",
+            "in": "query",
+            "name": "scale",
+            "required": false,
+            "schema": {
+              "default": 2,
+              "description": "pixels per point",
+              "maximum": 3,
+              "minimum": 1,
+              "title": "Scale",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Page Image"
+      }
+    },
+    "/api/specs": {
+      "get": {
+        "operationId": "list_specs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpecRow"
+                  },
+                  "title": "Response List Specs",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Specs"
+      }
+    },
+    "/api/specs/{name}": {
+      "delete": {
+        "operationId": "delete_spec",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]{1,80}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Spec"
+      },
+      "get": {
+        "operationId": "get_spec",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]{1,80}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Spec"
+      },
+      "put": {
+        "description": "Save the text under the name, replacing what the name held. A spec that does not\nload can be saved too, so work in progress is not lost.",
+        "operationId": "save_spec",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]{1,80}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecRow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Spec"
+      }
+    }
+  }
+}

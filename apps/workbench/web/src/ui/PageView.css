@@ -1,0 +1,87 @@
+/* PageView stands alone: these rules name no variable from the rest of the workbench. */
+.pageview {
+  position: relative;
+  width: 100%;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgb(40 30 10 / 0.14),
+    0 2px 10px rgb(40 30 10 / 0.1);
+}
+
+.pageview-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 120ms linear;
+  user-select: none;
+}
+
+.pageview-image[data-loaded="true"] {
+  opacity: 1;
+}
+
+.pageview-boxes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.pageview-box {
+  fill: currentColor;
+  fill-opacity: 0;
+  stroke: currentColor;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: all;
+}
+
+.pageview-box[data-look="wash"] {
+  fill-opacity: 0.16;
+  mix-blend-mode: multiply;
+}
+
+.pageview-box[data-look="strong"] {
+  fill-opacity: 0.3;
+  stroke-width: 2px;
+  mix-blend-mode: multiply;
+}
+
+.pageview-box[data-clickable] {
+  cursor: pointer;
+}
+
+.pageview-box:hover {
+  fill-opacity: 0.3;
+  stroke-width: 2px;
+}
+
+.pageview-label {
+  position: absolute;
+  z-index: 1;
+  max-width: 60%;
+  padding: 2px 7px;
+  transform: translateY(calc(-100% - 4px));
+  border-radius: 3px;
+  background: #1f1c17;
+  color: #f6eedc;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pageview-label[data-below="true"] {
+  transform: translateY(4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pageview-image {
+    transition: none;
+  }
+}

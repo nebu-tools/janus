@@ -55,3 +55,50 @@ jobs:
       - run: uv run --no-sync --project packages/janus ruff format --check --config packages/janus/pyproject.toml examples
       - run: uv run --no-sync --project packages/janus ruff check --config packages/janus/pyproject.toml examples
       - run: uv run --no-sync --project packages/janus python examples/check_readme.py README.md examples/README.md
+
+  workbench-server:
+    name: Workbench server (ruff format, ruff check, ty, pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/workbench/server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync ty check src tests
+      - run: uv run --no-sync pytest
+
+  workbench-web:
+    name: Workbench client (format, lint, types, unit tests, build, Chromium on the real server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/workbench/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/workbench/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: apps/workbench/web/pnpm-lock.yaml
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+        working-directory: apps/workbench/server
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Generated API types match the server
+        run: pnpm generate && git diff --exit-code -- src/api
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm e2e

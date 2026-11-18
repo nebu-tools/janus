@@ -52,13 +52,27 @@ packages/janus/                 distribution janus-pdf, import name janus_pdf
     canonical.py                RFC 8785 canonical JSON for hashes
   tests/                        fixtures/make_fixtures.py builds the test PDFs
   scripts/benchmark.py          timings on a generated 100-page document
+apps/workbench/
+  server/                       distribution janus-workbench: the API, and the built client
+    src/janus_workbench/
+      app.py                    the endpoints; each answers from one janus_pdf function
+      store.py                  documents, layers and specs as files named by hash
+      reading.py, jobs.py       reading in worker processes, with a deadline
+      work.py                   what a worker process runs
+      settings.py, cli.py       limits from the environment; janus-workbench serve | openapi
+  web/                          the React client
+    src/api/                    API types generated from the server's OpenAPI document
+    src/lib/                    state logic without React: live runs, page windowing, routes
+    src/ui/                     the page view with boxes, the page scroller, the editor
+    src/screens/                Documents, Inspect, SpecEditor
+    e2e/                        Playwright tests against the real server
 examples/                       three invented PDFs, each with a spec and reference data
   make_examples.py              builds the PDFs
   check_readme.py               runs the commands a README shows and compares their output
 assets/branding/                the logo
 ```
 
-The workbench is not built yet. It will live in `apps/workbench` and depend on `janus-pdf` only.
+The workbench depends on `janus-pdf` only, and `janus-pdf` never imports the workbench.
 
 The library depends on pydantic, PyMuPDF, pypdfium2, rapidfuzz and PyYAML. Docling,
 pdf-inspector and OCR are optional. Janus never imports Kittum.
@@ -95,6 +109,16 @@ checks = janus_pdf.compare(ex, reference, rules={})                        # com
   values, a message and an anchor.
 - `janus_pdf.resolve(anchor, layer)` finds an anchor again in another layer of the same document.
   `janus_pdf.render_png(pdf, page, scale)` renders a page image; boxes times `scale` fit over it.
+- `janus_pdf.page_count(pdf)` gives the number of pages without reading them, so a caller can
+  refuse a long file first.
+- `PyMuPDFParser(cache=directory)` writes each page into the directory as it is read. A read
+  that was stopped starts again at the first page not yet written, and the layer is the same as
+  one read in a single pass. The directory belongs to one document. Counting its files gives the
+  progress of a read.
+- A `SpecError` has a `line`, counted from 1, when the spec was given as text and the error
+  belongs to one line. An editor marks the error there.
+- An `Inspection` gives each page's size in points and each heading's box, so that a caller can
+  lay pages out before any image loads and draw headings on them.
 
 The library writes no files, starts no threads and keeps no global state, except caches of the
 most recent layer's lookups and index. Each cache is one immutable value replaced in a single
@@ -588,32 +612,80 @@ through `resolve`.
    `store.py` and `acquisition.py`, deletes `extraction/janus_path.py`, and changes imports.
    Kittum's document tests then run against Janus. Until it merges, Kittum pins the commit of
    this repository it was built against, so nothing on `main` has to serve it.
-3. To do: the workbench, on `janus-pdf`.
+3. Done in part: the workbench, on `janus-pdf`, with Documents, Inspect and the spec editor.
+   Click to locate, Runs and Compare are to do.
 
 ## The workbench
 
-The workbench is a FastAPI server and a React client. It has no extraction logic of its own: each
-endpoint calls one library function. It stores documents, layers, specs and runs on disk under
-`JANUS_DATA_DIR`, keyed by hash.
+The workbench is a FastAPI server and a React client in `apps/workbench`. It has no extraction
+logic of its own: each endpoint answers from one library function or from the files it keeps.
+`janus-workbench serve` serves the API and the built client on one port.
 
-Screens:
+### The server
 
-- **Documents.** Upload or drop PDFs. Each row shows pages, engine, tables found and read time.
-- **Inspect.** Page images with words, lines, headings and tables drawn on them. Each table
-  shows its ID and first rows. A search box shows every place a phrase is printed, and whether
-  it begins a line or a cell, because a label must.
-- **Spec editor.** The YAML on the left. The page and the results on the right. Each edit runs
-  `extract` on the open document after 300 ms without typing. The library reuses the layer and
-  its index, so a spec on 100 pages takes under 100 ms. Each field shows its status, value and
-  message, and clicking it shows its anchor boxes on the page. Load errors appear on their line.
-- **Click to locate.** Click a word on the page and the editor proposes locators for it: `label`
-  when a label is printed before it, `cell` and `label` with `column` in a table, `records` for a
-  table header, and `region` as a last choice. The author picks one, and the preview runs.
-- **Runs.** One spec over many documents, a row per document and a column per field. Long
-  documents and big batches show progress per page while the server reads them. Reading runs in
-  a worker process. The client polls one status endpoint, and a read that stops can restart
-  because each page's output is cached by hash.
-- **Compare.** Upload reference data and rules. Each check links to its anchor.
+Everything is a file under `JANUS_DATA_DIR`. There is no database. A document is kept under the
+SHA-256 of its bytes, a layer under its ID, a page image under a hash of the document, page,
+scale and renderer, and a spec's text under its own hash. A path on disk is never built from
+text a request sent. It is built only from a hash the server computed, checked against
+`[0-9a-f]{64}` first. A spec's name is a key in an index file and never part of a path. The
+client's files are listed once at start, and a request is looked up in that list.
+
+Reading and rendering run in worker processes, one process for each job. A job has a deadline,
+and a process that passes it is killed. An upload is refused above `JANUS_MAX_UPLOAD_MB`, and a
+document above `JANUS_MAX_PAGES` is not read. Two documents are read at a time.
+
+A read writes each page to the document's page cache (`PyMuPDFParser(cache=...)`). The documents
+list counts the files there, so the client shows progress by polling that one endpoint while a
+document is being read. When the server starts it queues every document whose read was cut off,
+and the read goes on from the pages already written. The cache is deleted once the layer is
+saved.
+
+The server has no sign-in. It listens on 127.0.0.1 and refuses another address unless started
+with `--listen-without-auth`. On 127.0.0.1 it also refuses a request whose `Host` header names
+anything but this machine, so a page on another site cannot reach it through a name of its own.
+
+A spec that does not load is an answer, with the message and the line, and is no HTTP error. A
+file that is no readable PDF becomes a row that says why it failed.
+
+### The client
+
+The client is React, TypeScript and Vite. Its API types are generated from the server's OpenAPI
+document by `pnpm generate`, and CI fails when the committed types differ from what the server
+describes.
+
+Documents lists the PDFs. Drop files on the page or choose them. Each row shows pages, tables,
+engine and read time, and a bar with the pages read so far while the document is being read.
+
+Inspect shows the page images with words, lines, headings, tables and table cells drawn on
+them. Each layer can be switched on and off. Each table shows its ID and first rows. A search
+box shows every place a phrase is printed, and whether it begins its line or cell, because a
+label must.
+
+The spec editor has the YAML on the left, the results in the middle and the page on the right.
+Each edit runs `extract` on the open document after 300 ms without typing. The library reuses
+the layer and its index, so a spec on 100 pages takes under 100 ms. Every run has a number. A
+newer edit aborts the run before it, and an answer is shown only when its number is the newest,
+so a slow answer for an older edit never replaces a newer one. Each field shows its status,
+value and message. Selecting a field scrolls to its page and draws its boxes, and hovering a box
+names its field. A load error is marked on its line, and the last results stay in place, dimmed,
+until the spec loads again. A spec is saved on the server under a name.
+
+The page view is one component that knows nothing about the workbench. It takes a page image, the
+page's size, and a list of boxes with a colour and a label, and it reports the box the pointer
+enters, leaves or clicks. Every screen that draws on a page uses it.
+
+Pages are drawn only near the viewport. Each page's size comes from the inspection, so every
+page has its place before its image loads and nothing moves when it does.
+
+### To do
+
+- Click to locate. Click a word on the page and the editor proposes locators for it: `label`
+  when a label is printed before it, `cell` and `label` with `column` in a table, `records` for
+  a table header, and `region` as a last choice. The author picks one, and the preview runs. The
+  page view already reports clicks on a box.
+- Runs. One spec over many documents, a row per document and a column per field.
+- Compare. Upload reference data and rules. Each check links to its anchor.
+- Engines other than PyMuPDF. The workbench reads every document with it.
 
 ## The CLI
 
