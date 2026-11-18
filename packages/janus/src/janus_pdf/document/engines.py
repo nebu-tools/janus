@@ -196,13 +196,26 @@ class PyMuPDFParser:
         )
 
     def parse(self, pdf: bytes) -> RawLayer:
-        pages = triage(pdf)
-        with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-            inputs = []
-            for page in doc:
-                page_input = pymupdf_page_input(page)
-                page_input.triage = pages[page_input.number - 1]
-                inputs.append(page_input)
+        """Raises `ValueError` when MuPDF cannot load part of a page: what it would read is not
+        the whole page. A cross-reference table it repairs is no reason to refuse the file."""
+        shown = pymupdf.TOOLS.mupdf_display_errors()
+        pymupdf.TOOLS.mupdf_display_errors(False)
+        pymupdf.TOOLS.reset_mupdf_warnings()
+        try:
+            pages = triage(pdf)
+            with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+                inputs = []
+                for page in doc:
+                    page_input = pymupdf_page_input(page)
+                    page_input.triage = pages[page_input.number - 1]
+                    inputs.append(page_input)
+            lost = [
+                w for w in pymupdf.TOOLS.mupdf_warnings().splitlines() if w.startswith("cannot")
+            ]
+        finally:
+            pymupdf.TOOLS.mupdf_display_errors(shown)
+        if lost:
+            raise ValueError(f"MuPDF cannot load all of it ({lost[0]})")
         return assemble(inputs)
 
 

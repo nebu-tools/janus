@@ -56,23 +56,40 @@ A `region` takes exactly the words whose box centre lies inside it, in reading o
 that straddles the edge goes to the side that holds more than half of it. A `label` drops a
 colon or a dash with a space after it, and nothing else, so `Amount: -123` reads -123.
 
-A `records` field reads one table. A table without rules runs while its lines fit its columns,
+A `records` field reads one table: the one under the header printed first in reading order,
+ruled or not. A table without rules runs while its lines fit its columns,
 each cell starting, ending or centred where its column's header or an earlier cell does. It ends
 at the first line that does not fit, at a row `stop:` names, or at the end of the page. Spacing
 between lines and the words in a row never end it. A subtotal, total or "carried forward" row
 reads as a record unless `stop:` ends the table there or `skip:` leaves the row out. The message
 lists each row `skip:` leaves out with its page.
 
-A table is on one page unless `continues:` says how it runs on. If another of the field's pages
-prints the header again, or opens with rows on the same column edges, the field is `incomplete`
-until the spec says which:
+The table ends where the header is printed again: lower on the same page, on a later page, or
+over a table of the other kind. The page does not say whether that goes on with the same table
+or heads another, so the field is `ambiguous`, and the message gives the page, until the spec
+says which:
+
+- `continues: none` says each header printed again heads another table. The field is the first
+  table, on its own page.
+- `skip: [Item]` leaves the header printed again out as a line of the same table, when the table
+  read reaches it and both are of the same kind.
+- `stop: [Item]` ends the field at the header printed again.
+- `continues: header` and `continues: rows`, below, read a header at the top of the next page
+  as the same table.
+- `pages:` keeps the field to the pages before it.
+
+No key reads a ruled table and a table without rules as one, or two tables printed apart on one
+page. Declare a field for each.
+
+A table is on one page unless `continues:` says how it runs on. If a later page of the field
+opens with rows on the same column edges, the field is `incomplete` until the spec says which:
 
 - `continues: header` follows the table only to pages that open with the same header text, and
   ends it at the first page that does not.
-- `continues: rows` follows the table to pages that open with rows on the same column edges. A
-  line equal to the header is left out, with a note. This form asserts that what is aligned at
+- `continues: rows` follows the table to pages that open with rows on the same column edges, and
+  leaves out a header that opens them, with a note. This form asserts that what is aligned at
   the top of the next page belongs to the table.
-- `pages: 1` keeps the field to one page.
+- `continues: none` or `pages: 1` keeps the field to one page.
 
 Each record keeps its page. In a table that runs over pages, running heads and feet are left out
 and the message lists each one with its pages. Any other line above the table on a continued
@@ -119,7 +136,10 @@ parentheses, which reads as negative. `percent` is a share from 0 to 100; `perce
 change that can take a sign and any size, such as `-2.5%` or `150%`.
 
 A spec is checked as it loads. A wrong key, a value of the wrong kind, or a spec that
-contradicts itself raises a `SpecError` that names the field and the key.
+contradicts itself raises a `SpecError` that names the field and the key. So does any text the
+spec compares with the page (a label, a header, a `stop:` or `skip:` row, a section, a row or
+column name) that is empty once spaces and a trailing colon are dropped, such as `":"`, and two
+headers of one table that name the same printed text.
 
 ## Use the command
 
@@ -130,7 +150,9 @@ janus compare invoice.yaml invoice.pdf expected.json
 ```
 
 Add `--json` before the command for JSON output. `extract` and `compare` exit with 0 when every
-field is extracted or every check matches, 1 when one is not, and 2 on bad input.
+field is extracted or every check matches, 1 when one is not, and 2 on bad input: a spec that
+does not load, a file that is not a whole PDF, or reference data or rules that do not parse. A
+fault in Janus itself exits with 3. Either way the error is one line, never a traceback.
 
 ## Use the library
 
@@ -149,14 +171,14 @@ janus_pdf.compare(extraction, {"total": {"amount": "627.00"}})
 
 Each field gets one status:
 
-| Status        | Meaning                                                            |
-| ------------- | ------------------------------------------------------------------ |
-| `extracted`   | found in one place, or in several places that print the same value |
-| `missing`     | not found; close labels come back as suggestions, never as values  |
-| `ambiguous`   | found in places that disagree; each place is listed                |
-| `incomplete`  | records the page shows may go on, or may hold another table        |
-| `invalid`     | found, but the text does not read as the type                      |
-| `unconfirmed` | a proposer gave a value that the page does not confirm             |
+| Status        | Meaning                                                                  |
+| ------------- | ------------------------------------------------------------------------ |
+| `extracted`   | found in one place, or in several places that print the same value       |
+| `missing`     | not found; close labels come back as suggestions, never as values        |
+| `ambiguous`   | found in places that disagree, or a table whose end the page leaves open |
+| `incomplete`  | records the page shows may go on, or may hold another table              |
+| `invalid`     | found, but the text does not read as the type                            |
+| `unconfirmed` | a proposer gave a value that the page does not confirm                   |
 
 "The same value" follows the type: `4.60` and `4.6` are the same decimal, but `001` and `1` are
 different text, while `a b` and `a  b` are the same text. `compare` checks reference data with

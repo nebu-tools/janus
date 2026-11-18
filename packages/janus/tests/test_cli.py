@@ -1,7 +1,9 @@
 import json
 
+import pytest
+
 from janus_pdf.cli import main
-from support import INSPECTION, INVOICE
+from support import INSPECTION, INVOICE, PACKING
 
 SPEC = """
 name: Supplier invoice
@@ -54,3 +56,56 @@ def test_inspect_shows_headings_tables_and_where_a_phrase_is(capsys):
     assert "r2: Deck joint | Not reachable | n/a" in out
     assert out.count("10.5 pt bold  Findings") == 2
     assert "label ok  Findings" in out
+
+
+def _fails_plainly(capsys, argv, code, says):
+    assert main(argv) == code
+    err = capsys.readouterr().err
+    assert err.startswith("janus: ") and "Traceback" not in err and says in err, err
+
+
+def test_a_bad_spec_or_pdf_is_reported_on_one_line_and_exits_2(tmp_path, capsys):
+    spec = tmp_path / "invoice.yaml"
+    spec.write_text(SPEC)
+    empty = tmp_path / "empty.yaml"
+    empty.write_text('fields: {x: {label: ":"}}\n')
+    _fails_plainly(capsys, ["extract", str(empty), str(INVOICE)], 2, 'x: label: ":" is empty')
+    lines = tmp_path / "lines.yaml"
+    lines.write_text("fields: {x: {records: {header: {a: Item}, continues: never}}}\n")
+    _fails_plainly(capsys, ["extract", str(lines), str(PACKING)], 2, "records.continues")
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("fields: [\n")
+    _fails_plainly(capsys, ["extract", str(broken), str(INVOICE)], 2, "not YAML or JSON")
+    text = tmp_path / "notes.pdf"
+    text.write_text("not a PDF at all")
+    _fails_plainly(capsys, ["extract", str(spec), str(text)], 2, "janus: ")
+    cut = tmp_path / "cut.pdf"
+    cut.write_bytes(INVOICE.read_bytes()[:2000])
+    _fails_plainly(capsys, ["inspect", str(cut)], 2, "janus: ")
+
+
+@pytest.mark.parametrize(
+    ("reference", "rules", "says"),
+    [
+        ("number: [", None, "expected.yaml:"),
+        ("- 1\n- 2\n", None, "the reference is a mapping"),
+        ("total: {amount: '627.00'}\n", "'*': {tolerance: lots}\n", "tolerance: expected a number"),
+        (
+            "total: {amount: '627.00'}\n",
+            "'*': {casefold: 'no'}\n",
+            "casefold: expected true or false",
+        ),
+        ("total: {amount: '627.00'}\n", "- 1\n", "rules map path patterns"),
+        ("total: {amount: '627.00'}\n", "'*': 5\n", "a rule is a mapping"),
+    ],
+)
+def test_bad_reference_or_rules_exit_2(tmp_path, capsys, reference, rules, says):
+    spec = tmp_path / "invoice.yaml"
+    spec.write_text(SPEC)
+    expected = tmp_path / "expected.yaml"
+    expected.write_text(reference)
+    argv = ["compare", str(spec), str(INVOICE), str(expected)]
+    if rules is not None:
+        (tmp_path / "rules.yaml").write_text(rules)
+        argv += ["--rules", str(tmp_path / "rules.yaml")]
+    _fails_plainly(capsys, argv, 2, says)

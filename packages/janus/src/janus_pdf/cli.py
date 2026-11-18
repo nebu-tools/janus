@@ -5,7 +5,9 @@
     janus compare invoice.yaml report.pdf expected.json --rules rules.yaml
 
 `extract` exits 0 when every field was extracted and 1 otherwise; `compare` exits 0 when every
-check matched and 1 otherwise; both exit 2 on bad input.
+check matched and 1 otherwise; both exit 2 on bad input (a spec that does not load, a file
+that is not a PDF, reference or rules that do not parse) and 3 on a fault in janus itself. Either
+way the error is printed on one line, never as a traceback.
 """
 
 import argparse
@@ -32,7 +34,10 @@ def _layer(path: str, engine: str) -> Layer:
 
 def _data(path: str) -> Any:
     text = Path(path).read_text()
-    return json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+    try:
+        return json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+    except (ValueError, yaml.YAMLError) as exc:
+        raise ValueError(f"{path}: {' '.join(str(exc).split())}") from None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -80,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"janus: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # a fault in janus, reported without a traceback
+        print(f"janus: internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

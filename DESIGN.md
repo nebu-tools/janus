@@ -201,7 +201,12 @@ cannot reach a locator. Every failure is a `SpecError` that names the field and 
 for an unknown key, a field with no locator or two, a value of the wrong kind for any key
 (`cell: 3`, `fields: null`, `label: 123`), a bad type, and a spec that contradicts itself, such
 as a `region` page or a numbered `cell` table outside the field's `pages`, or a `filled` key that
-is not one of the header's keys.
+is not one of the header's keys. Text the spec compares with the page (`label`, `column`,
+`section`, `under`, a `cell` row or column name, a `records` header, `stop:` and `skip:`) must
+keep some text once it is normalised as the page is, so `label: ":"` fails as it loads:
+`x: label: ":" is empty once spaces and a trailing colon are dropped, so it would match no printed
+text`. Two headers of one table may not normalise to the same text, and a header key is letters,
+digits, `_` and `-`, so it can stand in a path.
 
 ### Locators
 
@@ -246,10 +251,11 @@ declares do.
 
 | Question                                      | Settled by                                                                   |
 | --------------------------------------------- | ---------------------------------------------------------------------------- |
-| where the table starts                        | the page: the first row that holds every header                              |
+| where the table starts                        | the page: the first row, in reading order, that holds every header           |
+| what the header printed again means           | the spec: `continues:`, `skip:`, `stop:` or `pages:`                         |
 | where it ends on a page                       | the page: the grid's end, a line that does not fit, the page's end; `stop:`  |
 | which rows are left out                       | the spec: `skip:`; over pages, running heads and feet                        |
-| whether it runs over pages                    | the spec: `continues: header` or `continues: rows`                           |
+| whether it runs over pages                    | the spec: `continues: header`, `continues: rows` or `continues: none`        |
 | which lines of a borderless table are records | the page if each line fills every column; else `filled:`                     |
 | whether a line is another table's header      | the page: a line set like the header, or a cell that fails its column's type |
 
@@ -264,7 +270,29 @@ starts, ends or is centred within 1.5 points of where that column's header, or a
 read in it, does. The first line that does not fit ends the table, and the message quotes it. A
 gap between lines ends nothing.
 
-#### Another table's header
+#### The header printed again
+
+Every row that holds every header is a match: a row of a ruled table, or a printed row outside
+the ruled tables. The first match in reading order is the table read, whatever its kind. Every
+other match ends that table where it stands, and the page does not say whether it goes on with
+the same table or heads another. That is the question a label printed twice with two values
+raises, so the answer is the same: the field is `ambiguous`, with no value, until a key settles
+it. The message gives the page of the match and the keys that settle it either way:
+
+| The match                                    | Only the first table           | One table                                |
+| -------------------------------------------- | ------------------------------ | ---------------------------------------- |
+| in the table read, of the same kind          | `continues: none`, or `stop:`  | `skip:` leaves the line out              |
+| on a later page                              | `continues: none` or `pages:`  | `continues: header` or `continues: rows` |
+| outside the table read, or of the other kind | `continues: none`, or `pages:` | none: declare a field for each           |
+
+A match is settled when `continues: none` is declared, when a `stop:` or `skip:` row holds it,
+or when it opens a page the table continues onto. `continues: none` says that every other match
+heads another table; the field is the first table, on its own page, and a note gives the pages of
+the others. A header that opens a continued page under `continues: header` or `continues: rows`
+is left out with a note, as before. The other table's rows are never read into the field: a
+ruled table's rows end at its grid, and a table without rules ends at the matched line.
+
+#### Another table's header, set like the header
 
 A line inside the table may be another table's header: on a continued page, or further down the
 same page. Janus takes two kinds of evidence from the page. Where the header is set differently
@@ -281,25 +309,26 @@ no evidence, and the other header reads as a record. The README lists this among
 
 A records field reads one table on one page unless the spec says `continues:`.
 
-Without it, Janus looks at the field's other pages. When any of them prints the header again, or
-opens with rows on the same column edges, the field is `incomplete`, with no value, and the
-message names those pages and the remedies: `continues: header`, `continues: rows`, or
-`pages: 1`. Two one-page forms in one file are such a case, and so is a table that a blank page
-separates from its twin.
+Without it, Janus looks at the field's other pages. A page that prints the header again is a
+match (above), so the field is `ambiguous`. Two one-page forms in one file are such a case, and
+so is a table that a blank page separates from its twin. A page that opens with rows on the same
+column edges makes the field `incomplete`, with no value, and the message names that page and
+the remedies: `continues: rows`, `continues: none` or `pages: 1`.
 
 `continues: header` runs the table on over each following page of the field that opens, after
 running heads, with the same header text, and ends it at the first page that does not.
 `continues: rows` runs it on over each following page that opens with the header or with rows on
 the same column edges: for a ruled table, a table whose column edges match within 1.5 points;
-without rules, a line that fills at least two columns and fits them. A line equal to the header
-is left out and noted. This form asserts that what is aligned at the top of the next page belongs
+without rules, a line that fills at least two columns and fits them. A header that opens such a
+page is left out and noted. This form asserts that what is aligned at the top of the next page belongs
 to the table, so another table there is read as rows unless its header gives the evidence above.
 
 On a continued page, a line above the table that is neither a running head nor a row `skip:`
 names, such as "Table 3 (continued)", makes the field `incomplete`; the message quotes it and
-names `skip:` and `pages:`. When a matching table appears again after the table has ended, the
-field is `incomplete`, and the message says where and why the table ended and to keep the field
-to its pages with `pages:`. When the table runs to the field's last page and the document goes
+names `skip:` and `pages:`. When the header is printed again after the table has ended, the field
+is `ambiguous`; when rows on its column edges open a page after it has ended, it is
+`incomplete`. Either message says where the table ended and to keep the field to its pages with
+`pages:`. When the table runs to the field's last page and the document goes
 on, the value is extracted with a note that the table may go on there.
 
 Only where a table runs over pages are running heads and feet left out of it. A candidate is a
@@ -434,7 +463,8 @@ numbers, so "4.60" and "4.6" agree in a decimal field. Text is the same only whe
 after spacing, so a text field printed `Code: 001` in one place and `Code: 1` in another is
 `ambiguous`. Dates, money and compound values compare part by part in the same way.
 
-`ambiguous` also covers a printed line that could belong to two records. A records field that is
+`ambiguous` also covers a printed line that could belong to two records, and the header of a
+records field printed again where no key says whether it is the same table. A records field that is
 `ambiguous` or `incomplete` keeps no rows: a partial list is never presented as the whole.
 
 Every other result has a value of `None`. `ex.data` therefore contains only values that meet the
@@ -568,7 +598,11 @@ janus compare SPEC FILE.pdf REFERENCE [--rules RULES]
 
 `--engine pymupdf|pdfium` chooses the engine. `--json` prints JSON. `extract` exits with 0 when
 every field is extracted. `compare` exits with 0 when every check matches. Both exit with 1
-otherwise, and with 2 for bad input. The text output gives one line per field: status, path,
+otherwise, and with 2 for bad input: a spec that does not load, a file that is not a whole PDF
+(including one whose pages MuPDF cannot load whole), or reference data or rules that do not
+parse, such as a tolerance that is not a number or a `casefold` that is not true or false. A
+fault in Janus itself exits with 3. The error is printed as one line on stderr, never as a
+traceback. The text output gives one line per field: status, path,
 page, value, then the message and suggestions on the next lines.
 
 ## Performance

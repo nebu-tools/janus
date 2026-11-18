@@ -56,14 +56,27 @@ def rule(raw: Mapping[str, Any] | Rule) -> Rule:
     """A rule from a mapping such as {tolerance: 0.01, relative: false, casefold: true}."""
     if isinstance(raw, Rule):
         return raw
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"a rule is a mapping of options, not {raw!r}")
     unknown = set(raw) - {"tolerance", "relative", "casefold"}
     if unknown:
-        raise ValueError(f"unknown rule option(s): {', '.join(sorted(unknown))}")
-    return Rule(
-        Decimal(str(raw.get("tolerance", 0))),
-        bool(raw.get("relative", False)),
-        bool(raw.get("casefold", False)),
-    )
+        raise ValueError(f"unknown rule option(s): {', '.join(sorted(map(str, unknown)))}")
+    tolerance = raw.get("tolerance", 0)
+    try:
+        if isinstance(tolerance, bool):
+            raise ArithmeticError
+        amount = Decimal(str(tolerance))
+        if not amount.is_finite() or amount < 0:
+            raise ArithmeticError
+    except ArithmeticError:
+        raise ValueError(f"tolerance: expected a number of 0 or more, not {tolerance!r}") from None
+    flags = []
+    for name in ("relative", "casefold"):
+        value = raw.get(name, False)
+        if not isinstance(value, bool):
+            raise ValueError(f"{name}: expected true or false, not {value!r}")
+        flags.append(value)
+    return Rule(amount, *flags)
 
 
 def _leaves(value: Any, path: str = ""):
@@ -115,7 +128,13 @@ def compare(
 ) -> tuple[Check, ...]:
     """One check per leaf of `reference`. `rules` maps path patterns ("total/amount",
     "lines/*/amount/amount", "*") to options; the first pattern that matches applies."""
-    patterns = [(p, rule(r)) for p, r in (rules or {}).items()]
+    if not isinstance(reference, dict):
+        raise ValueError(
+            f"the reference is a mapping shaped like the extraction's data, not {reference!r}"
+        )
+    if rules is not None and not isinstance(rules, Mapping):
+        raise ValueError(f"rules map path patterns to options, not {rules!r}")
+    patterns = [(str(p), rule(r)) for p, r in (rules or {}).items()]
     results = {r.path: r for r in extraction.fields}
     data = extraction.data
     checks = []
