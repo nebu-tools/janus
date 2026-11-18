@@ -65,6 +65,25 @@ jobs:
       - run: uv run --no-sync ty check src
       - run: uv run --no-sync pytest
 
+  janus-pdf:
+    name: janus-pdf (ruff format, ruff check, ty, pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/janus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+        # Docling pulls in torch and model weights; its tests skip without it.
+      - run: uv sync --locked --extra triage
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync ty check src tests
+      - run: uv run --no-sync pytest
+
   cohort-example:
     name: Cohort-report example (downloaded from public source)
     runs-on: ubuntu-latest

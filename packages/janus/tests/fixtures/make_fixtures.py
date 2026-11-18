@@ -1,0 +1,399 @@
+"""Build the test PDFs in this directory.
+
+    uv run python tests/fixtures/make_fixtures.py
+
+Every document is invented. Text goes in Liberation Sans (SIL Open Font License 1.1), embedded
+and subset, because PDF's built-in Helvetica has no euro sign or en dash and no ToUnicode map. The script
+looks for the fonts in the usual Linux places or in $JANUS_FONT_DIR; they come with most Linux
+distributions and from https://github.com/liberationfonts/liberation-fonts/releases. The fonts
+themselves are not committed, only the PDFs that embed them.
+
+The output is deterministic for a given PyMuPDF: fixed metadata, no timestamps, no random IDs.
+"""
+
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pymupdf
+
+HERE = Path(__file__).parent
+_FONT_DIRS = (
+    os.environ.get("JANUS_FONT_DIR", ""),
+    "/usr/share/fonts/liberation",
+    "/usr/share/fonts/truetype/liberation",
+    "/usr/share/fonts/liberation-sans",
+    "/usr/share/fonts/TTF",
+)
+WIDTH, HEIGHT = 595.0, 842.0  # A4
+MARGIN = 56.0
+GUTTER = WIDTH / 2  # between the two columns of page 2
+COLUMN = (MARGIN, GUTTER - 10.0), (GUTTER + 10.0, WIDTH - MARGIN)
+BODY, LEADING = 9.5, 12.5
+REGULAR, BOLD = "F1", "F2"
+
+
+def _font(name: str) -> str:
+    for directory in _FONT_DIRS:
+        path = Path(directory) / name
+        if directory and path.is_file():
+            return str(path)
+    sys.exit(f"{name} not found; install Liberation Sans or set JANUS_FONT_DIR")
+
+
+@dataclass
+class Writer:
+    """Places text and rules on pages, top-left origin, y the baseline."""
+
+    doc: pymupdf.Document = field(default_factory=pymupdf.open)
+    regular: str = field(default_factory=lambda: _font("LiberationSans-Regular.ttf"))
+    bold: str = field(default_factory=lambda: _font("LiberationSans-Bold.ttf"))
+
+    def page(self) -> pymupdf.Page:
+        page = self.doc.new_page(width=WIDTH, height=HEIGHT)
+        page.insert_font(fontname=REGULAR, fontfile=self.regular)
+        page.insert_font(fontname=BOLD, fontfile=self.bold)
+        return page
+
+    def text(
+        self, page: pymupdf.Page, x: float, y: float, text: str, size=BODY, bold=False
+    ) -> float:
+        """Write one line; return its right edge."""
+        font = BOLD if bold else REGULAR
+        page.insert_text((x, y), text, fontname=font, fontsize=size)
+        return x + self.width(text, size, bold)
+
+    def width(self, text: str, size=BODY, bold=False) -> float:
+        return pymupdf.Font(fontfile=self.bold if bold else self.regular).text_length(
+            text, fontsize=size
+        )
+
+    def lines(
+        self, page: pymupdf.Page, x: float, y: float, lines: list[str], fit=0.0, **kw
+    ) -> float:
+        """Write lines one under another; return the baseline after the last. With `fit`, every
+        line must be narrower than that, so a column's lines never reach into the next one."""
+        for line in lines:
+            right = self.text(page, x, y, line, **kw)
+            if fit and right - x > fit:
+                sys.exit(f"{line!r} is wider than {fit} points")
+            y += LEADING
+        return y
+
+    def rule(self, page: pymupdf.Page, x0: float, x1: float, y: float, width=0.6) -> None:
+        page.draw_line((x0, y), (x1, y), width=width)
+
+    def vrule(self, page: pymupdf.Page, x: float, y0: float, y1: float) -> None:
+        page.draw_line((x, y0), (x, y1), width=0.6)
+
+    def save(self, path: Path, title: str) -> None:
+        self.doc.subset_fonts()
+        self.doc.set_metadata(
+            {"title": title, "author": "Janus test fixtures", "producer": "", "creator": ""}
+        )
+        self.doc.save(path, garbage=4, deflate=True, no_new_id=True)
+        print(f"wrote {path.relative_to(HERE.parent.parent)} ({path.stat().st_size} bytes)")
+
+
+# --- The survey report --------------------------------------------------------------------------
+
+REPORT = "Stream Invertebrate Survey 2026"
+GROUP = "Northfield Ecology Group"
+
+# Page 2: a paragraph that runs from the foot of the left column to the top of the right one,
+# hyphenated at a line break on the way.
+COLUMN_BREAK = [
+    "Abundance estimates were directionally consis-",
+    "tent across both sites and agreed with the",
+]
+COLUMN_TOP = ["counts from the earlier survey of the same", "streams in the winter of 2024."]
+COLUMN_BREAK_QUOTE = (
+    "Abundance estimates were directionally consistent across both sites and agreed with the "
+    "counts from the earlier survey of the same"
+)
+# Page 2: "residing" broken with a soft hyphen (U+00AD), not a printed one.
+SOFT_HYPHEN = ["Most mayfly nymphs were found under stones, resid­", "ing in the fastest riffles."]
+SOFT_HYPHEN_QUOTE = "under stones, residing in the fastest"
+
+
+def _furniture(w: Writer, page: pymupdf.Page, number: int, pages: int) -> None:
+    """The running head and footer every page carries."""
+    w.text(page, MARGIN, 36, f"{GROUP}  |  {REPORT}", size=7.5)
+    w.text(page, WIDTH - MARGIN - w.width("Report NEG-2026-04", 7.5), 36, "Report NEG-2026-04", 7.5)
+    w.rule(page, MARGIN, WIDTH - MARGIN, 42, width=0.3)
+    w.text(page, MARGIN, 812, "Northfield Ecology Group, 4 Mill Lane, Northfield", size=7.5)
+    label = f"Page {number} of {pages}"
+    w.text(page, WIDTH - MARGIN - w.width(label, 7.5), 812, label, size=7.5)
+
+
+def _h1(w: Writer, page: pymupdf.Page, x: float, y: float, text: str) -> float:
+    w.text(page, x, y, text, size=12, bold=True)
+    return y + 18
+
+
+def _h2(w: Writer, page: pymupdf.Page, x: float, y: float, text: str) -> float:
+    w.text(page, x, y, text, size=10.5, bold=True)
+    return y + 15
+
+
+def _page1(w: Writer) -> None:
+    page = w.page()
+    x = MARGIN
+    w.text(page, x, 90, REPORT, size=18, bold=True)
+    w.text(page, x, 110, GROUP, size=11)
+    y = w.lines(
+        page,
+        x,
+        134,
+        [
+            "Report date: 14 March 2026",
+            "Survey period: 03/02/2026 to 28/02/2026",
+            "Lead surveyor: R. Okafor",
+        ],
+    )
+    y = _h1(w, page, x, y + 14, "1 Introduction")
+    y = w.lines(
+        page,
+        x,
+        y,
+        [
+            "This report describes the winter survey of benthic invertebrates in two chalk streams",
+            "north of Northfield. Site A lies upstream of the sewage works and Site B lies 2 km",
+            "downstream of it. The survey repeats the methods of the 2024 survey so that the two",
+            "years can be compared directly.",
+        ],
+    )
+    y = _h1(w, page, x, y + 14, "2 Methods")
+    y = _h2(w, page, x, y, "2.1 Sampling")
+    y = w.lines(
+        page,
+        x,
+        y,
+        [
+            "Three-minute kick samples were taken with a 1 mm mesh net at riffles, pools and runs.",
+            "Each site was visited on four mornings between 03/02/2026 and 28/02/2026, and 120",
+            "samples were taken at each site in total.",
+        ],
+    )
+    y = _h2(w, page, x, y + 8, "2.2 Laboratory analysis")
+    w.lines(
+        page,
+        x,
+        y,
+        [
+            "Samples were sorted under a stereo microscope and identified to family level. Body",
+            "length was measured on the first 20 individuals of each family in each sample.",
+        ],
+    )
+
+
+def _page2(w: Writer) -> None:
+    page = w.page()
+    (lx, lr), (rx, rr) = COLUMN
+    left, right = lr - lx, rr - rx
+    y = _h1(w, page, lx, 80, "3 Results")
+    y = _h2(w, page, lx, y, "3.1 Sampling")
+    y = w.lines(
+        page,
+        lx,
+        y,
+        [
+            "All 240 planned samples were taken. Two",
+            "samples at Site B were taken again on the",
+            "following morning after the net tore.",
+        ],
+        fit=left,
+    )
+    y = _h2(w, page, lx, y + 8, "3.2 Abundance")
+    y = w.lines(
+        page,
+        lx,
+        y,
+        [
+            "Site A held more taxa per sample than Site",
+            "B in every habitat (Table 1). The difference",
+            "was largest in riffles and smallest in pools.",
+            *SOFT_HYPHEN,
+        ],
+        fit=left,
+    )
+    # Fill the left column so the quote's first lines sit at its foot.
+    filler = [
+        "Counts are given per sample unless a table",
+        "says otherwise. Families with fewer than",
+        "five individuals in the whole survey are",
+        "pooled as other taxa in every table.",
+    ]
+    k = 0
+    while y < 740 - 3 * LEADING:
+        y = w.lines(page, lx, y, [filler[k % len(filler)]], fit=left)
+        k += 1
+    w.lines(page, lx, y, ["Sorting errors were below 5% in every batch.", *COLUMN_BREAK], fit=left)
+
+    y = w.lines(page, rx, 80, COLUMN_TOP, fit=right)
+    y = _h2(w, page, rx, y + 8, "3.3 Water chemistry")
+    w.lines(
+        page,
+        rx,
+        y,
+        [
+            "Nitrate was higher at Site B on every visit",
+            "(Table 2). Conductivity (EC) followed the",
+            "same pattern; pH did not differ by site.",
+        ],
+        fit=right,
+    )
+
+
+# Table 1: three rules, nested headers (a row-spanning "Measure", "Site A" and "Site B" each over
+# three habitats), and compound values. "1.0 (1.0, 2.0)" is printed three times in one row.
+TABLE1_HEAD = ["Riffle", "Pool", "Run"]
+TABLE1_ROWS = [
+    ("Samples, n", ["40", "40", "40", "40", "40", "40"]),
+    ("Taxa per sample, mean (SD)", ["14.2 (3.1)", "11.8 (2.7)", "13.0 (3.0)", "12.6 (2.9)", "10.4 (2.2)", "11.5 (2.7)"]),
+    ("EPT individuals, n (%)", ["412 (34.5%)", "298 (27.1%)", "355 (30.2%)", "260 (22.4%)", "201 (19.8%)", "233 (21.0%)"]),
+    ("Length, mm, mean ± SD", ["4.6 ± 1.2", "3.9 ± 1.0", "4.2 ± 1.1", "4.1 ± 1.3", "3.5 ± 0.9", "3.8 ± 1.0"]),
+    ("Abundance ratio (95% CI)", ["1.0 (1.0, 2.0)", "1.0 (1.0, 2.0)", "1.0 (1.0, 2.0)", "0.8 (0.6, 1.1)", "0.7 (0.5, 1.0)", "0.9 (0.7, 1.2)"]),
+]  # fmt: skip
+
+
+def _page3(w: Writer) -> None:
+    page = w.page()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    w.text(page, x0, 80, "Table 1 Invertebrates per sample by site and habitat", bold=True)
+    top = 88.0
+    w.rule(page, x0, x1, top)
+    first = 170.0
+    col = (x1 - first) / 6
+    xs = [first + i * col for i in range(6)]
+    w.text(page, x0, top + 13, "Measure", bold=True)
+    for group, start in (("Site A (n = 120)", 0), ("Site B (n = 120)", 3)):
+        w.text(page, xs[start], top + 13, group, bold=True)
+        w.rule(page, xs[start], xs[start] + 3 * col - 8, top + 17, width=0.4)
+    for i, head in enumerate(TABLE1_HEAD * 2):
+        w.text(page, xs[i], top + 29, head, bold=True)
+    w.rule(page, x0, x1, top + 34)
+    y = top + 48
+    for label, values in TABLE1_ROWS:
+        w.text(page, x0, y, label, size=8.5)
+        for xv, value in zip(xs, values, strict=True):
+            w.text(page, xv, y, value, size=8.5)
+        y += 15
+    w.rule(page, x0, x1, y - 9)
+    w.lines(
+        page,
+        x0,
+        y + 8,
+        [
+            "EPT: mayflies, stoneflies and caddisflies. The abundance ratio compares each habitat",
+            "with riffles at Site A.",
+        ],
+        size=8,
+    )
+
+    y = _h1(w, page, x0, y + 50, "4 Discussion")
+    w.lines(
+        page,
+        x0,
+        y,
+        [
+            "The lower counts at Site B match the higher nitrate there. The 2024 survey found the",
+            "same pattern, so the difference is unlikely to be a single bad winter.",
+        ],
+    )
+
+
+# Table 2: fully ruled, its first row a title across every column, so the header is row 2.
+TABLE2_HEAD = ["Site", "Visit date", "pH", "EC, µS/cm", "Nitrate, mg/L"]
+TABLE2_ROWS = [
+    ["Site A", "03/02/2026", "7.9", "512", "4.1"],
+    ["Site A", "17/02/2026", "8.0", "498", "3.8"],
+    ["Site B", "03/02/2026", "7.8", "604", "7.6"],
+    ["Site B", "17/02/2026", "7.9", "611", "8.2"],
+]
+# Table 3: three rules; "Measure" and "Habitat" span both header rows, "Difference between sites"
+# spans two columns, and the values are estimates with intervals and p-values.
+TABLE3_ROWS = [
+    ("Taxa per sample", "Riffle", "14.2 (3.1)", "12.6 (2.9)", "1.6 (0.9, 2.3)", "P < 0.001"),
+    ("", "Pool", "11.8 (2.7)", "10.4 (2.2)", "1.4 (0.6, 2.2)", "P = 0.002"),
+    ("Body length, mm", "Riffle", "4.6 (1.2)", "4.1 (1.3)", "0.5 (0.1, 0.9)", "P = 0.03"),
+    ("", "Pool", "3.9 (1.0)", "3.5 (0.9)", "0.4 (-0.1, 0.9)", "P = 0.12"),
+]
+
+
+def _page4(w: Writer) -> None:
+    page = w.page()
+    x0, x1 = MARGIN, WIDTH - MARGIN
+    w.text(page, x0, 80, "Table 2 Water chemistry at each visit", bold=True)
+    widths = [90.0, 90.0, 60.0, 120.0]
+    xs = [x0]
+    for width in widths:
+        xs.append(xs[-1] + width)
+    xs.append(x1)
+    top, row = 88.0, 16.0
+    rows = 2 + len(TABLE2_ROWS)
+    bottom = top + rows * row
+    for r in range(rows + 1):
+        w.rule(page, x0, x1, top + r * row)
+    for i, x in enumerate(xs):
+        # The title row has no inner verticals.
+        w.vrule(page, x, top if i in (0, len(xs) - 1) else top + row, bottom)
+    w.text(page, x0 + 4, top + 11.5, "Water chemistry, February 2026", bold=True)
+    for xv, head in zip(xs, TABLE2_HEAD, strict=False):
+        w.text(page, xv + 4, top + row + 11.5, head, size=8.5, bold=True)
+    for r, values in enumerate(TABLE2_ROWS, start=2):
+        for xv, value in zip(xs, values, strict=False):
+            w.text(page, xv + 4, top + r * row + 11.5, value, size=8.5)
+
+    y = bottom + 40
+    w.text(page, x0, y, "Table 3 Differences between sites by habitat", bold=True)
+    top = y + 8
+    w.rule(page, x0, x1, top)
+    xs = [x0, x0 + 95, x0 + 160, x0 + 225, x0 + 290, x0 + 400]
+    w.text(page, xs[0], top + 13, "Measure", bold=True)
+    w.text(page, xs[1], top + 13, "Habitat", bold=True)
+    w.text(page, xs[2], top + 13, "Site A", bold=True)
+    w.text(page, xs[3], top + 13, "Site B", bold=True)
+    w.text(page, xs[4], top + 13, "Difference between sites", bold=True)
+    w.rule(page, xs[4], x1, top + 17, width=0.4)
+    w.text(page, xs[2], top + 29, "mean (SD)", size=8.5, bold=True)
+    w.text(page, xs[3], top + 29, "mean (SD)", size=8.5, bold=True)
+    w.text(page, xs[4], top + 29, "Estimate (95% CI)", size=8.5, bold=True)
+    w.text(page, xs[5], top + 29, "P value", size=8.5, bold=True)
+    w.rule(page, x0, x1, top + 34)
+    y = top + 48
+    for values in TABLE3_ROWS:
+        for xv, value in zip(xs, values, strict=True):
+            if value:
+                w.text(page, xv, y, value, size=8.5)
+        y += 15
+    w.rule(page, x0, x1, y - 9)
+
+    # A borderless list of sampling visits: aligned columns, no rules, no caption.
+    y = _h2(w, page, x0, y + 40, "Sampling visits")
+    xs = [x0, x0 + 80, x0 + 210, x0 + 300]
+    for values in (
+        ("Site", "Date", "Start", "Samples"),
+        ("Site A", "3 February 2026", "09:40", "30"),
+        ("Site B", "3 February 2026", "11:15", "30"),
+        ("Site A", "17 February 2026", "09:35", "30"),
+        ("Site B", "17 February 2026", "11:05", "30"),
+    ):
+        for xv, value in zip(xs, values, strict=True):
+            w.text(page, xv, y, value, bold=values[0] == "Site")
+        y += LEADING
+
+
+def report() -> None:
+    w = Writer()
+    for make in (_page1, _page2, _page3, _page4):
+        make(w)
+    for index in range(len(w.doc)):
+        number, page = index + 1, w.doc[index]
+        _furniture(w, page, number, len(w.doc))
+    w.save(HERE / "survey-report.pdf", REPORT)
+
+
+if __name__ == "__main__":
+    report()
