@@ -7,6 +7,10 @@
 // The last answer worth showing is kept while a later input runs or fails. It is then `stale`:
 // whoever draws it draws it dimmed, with the input it belongs to. A screen never works this out
 // for itself.
+//
+// The same input can be asked again: to refresh a list, or to try once more after a failure.
+// While that runs, what is shown is still the answer to the newest input, so it is not stale.
+// If it fails, what is shown is from before the failure, and it is stale.
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { DependencyList } from "react";
 
@@ -29,6 +33,8 @@ export interface LiveRun<I, O> {
   /** Take a new input. Every earlier answer is void from now; it runs once `delay` ms pass
    * without another. */
   submit(input: I): void;
+  /** Run the newest input again, now. What is shown and the last failure stay until it answers. */
+  again(): void;
   /** Forget everything: no input, nothing shown, and every answer still on its way ignored. */
   clear(): void;
   state(): LiveState<I, O>;
@@ -105,6 +111,13 @@ export function liveRun<I, O>(options: LiveRunOptions<I, O>): LiveRun<I, O> {
       set(waiting(state, input));
       timer = setTimeout(() => start(input, mine), options.delay);
     },
+    again() {
+      const { input } = state;
+      if (input === null) return;
+      drop();
+      set({ ...state, pending: true });
+      start(input, newest);
+    },
     clear() {
       drop();
       if (state !== EMPTY) set(EMPTY);
@@ -128,7 +141,7 @@ export function useLiveRun<I, O>(
   input: I | null,
   make: () => LiveRunOptions<I, O>,
   deps: DependencyList,
-): LiveState<I, O> {
+): LiveState<I, O> & Pick<LiveRun<I, O>, "again"> {
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- the caller lists what `make` reads
   const live = useMemo(() => liveRun(make()), deps);
   useEffect(() => {
@@ -137,6 +150,10 @@ export function useLiveRun<I, O>(
   }, [live, input]);
   useEffect(() => () => live.clear(), [live]);
   const state = useSyncExternalStore(live.subscribe, live.state);
-  if (Object.is(state.input, input)) return state;
-  return input === null ? EMPTY : waiting(state, input);
+  const now = Object.is(state.input, input)
+    ? state
+    : input === null
+      ? (EMPTY as LiveState<I, O>)
+      : waiting(state, input);
+  return { ...now, again: live.again };
 }

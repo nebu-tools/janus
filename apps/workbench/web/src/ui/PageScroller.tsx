@@ -12,8 +12,9 @@ import {
 } from "react";
 import type { Ref } from "react";
 
+import { useAnnounce } from "../lib/announce.tsx";
 import { pageAt, stackPages, visibleRange } from "../lib/windowing.ts";
-import type { PageBox } from "./PageView.tsx";
+import type { PageBox, PageViewProps } from "./PageView.tsx";
 import { PageView } from "./PageView.tsx";
 
 export interface ScrollerPage {
@@ -23,34 +24,41 @@ export interface ScrollerPage {
 }
 
 export interface PageScrollerHandle {
-  /** Bring a page into view; with `y` (in page units), bring that height of it into view. */
+  /** Bring a page into view; with `y` (in page units), bring that height of it into view.
+   * Nothing is announced: the caller knows why it jumped and says so. */
   show(page: number, y?: number): void;
+  /** Go to the page after (1) or before (-1) the one in view, and announce the page reached. */
+  step(delta: -1 | 1): void;
 }
 
-interface Props {
+type Pass = Pick<PageViewProps, "onBoxActive" | "onBoxChoose" | "explain">;
+
+interface Props extends Pass {
   ref?: Ref<PageScrollerHandle>;
   pages: readonly ScrollerPage[];
   image: (page: number) => string;
   boxes: (page: number) => readonly PageBox[];
   /** The pages now drawn, so their data can be fetched. */
   onRange?: (first: number, last: number) => void;
-  onBoxEnter?: (id: string) => void;
-  onBoxLeave?: (id: string) => void;
-  onBoxClick?: (id: string) => void;
 }
 
-interface SlotProps extends Omit<Props, "ref" | "pages" | "onRange"> {
+interface SlotProps extends Pass {
   page: ScrollerPage;
   top: number;
   height: number;
   width: number;
+  image: (page: number) => string;
+  boxes: (page: number) => readonly PageBox[];
+  onPage: (from: number, delta: -1 | 1) => void;
 }
 
 // Scrolling draws the scroller again. A page whose place, image and boxes are the same is
 // left alone, and its boxes are worked out once.
 const Slot = memo(function Slot(props: SlotProps) {
-  const { page, top, height, width, image, boxes, onBoxEnter, onBoxLeave, onBoxClick } = props;
+  const { page, top, height, width, image, boxes, onPage, onBoxActive, onBoxChoose, explain } =
+    props;
   const list = useMemo(() => boxes(page.number), [boxes, page.number]);
+  const turn = useCallback((delta: -1 | 1) => onPage(page.number, delta), [onPage, page.number]);
   return (
     <div className="scroller-page" data-page={page.number} style={{ top, height, width }}>
       <PageView
@@ -58,10 +66,11 @@ const Slot = memo(function Slot(props: SlotProps) {
         width={page.width}
         height={page.height}
         boxes={list}
-        alt={`Page ${page.number}`}
-        {...(onBoxEnter ? { onBoxEnter } : {})}
-        {...(onBoxLeave ? { onBoxLeave } : {})}
-        {...(onBoxClick ? { onBoxClick } : {})}
+        name={`Page ${page.number}`}
+        onPage={turn}
+        {...(onBoxActive ? { onBoxActive } : {})}
+        {...(onBoxChoose ? { onBoxChoose } : {})}
+        {...(explain ? { explain } : {})}
       />
     </div>
   );
@@ -78,12 +87,15 @@ const MAX_WIDTH = 920;
 const OVERSCAN = 700;
 
 export function PageScroller(props: Props) {
-  const { ref, pages, image, boxes, onRange, onBoxEnter, onBoxLeave, onBoxClick } = props;
+  const { ref, pages, image, boxes, onRange, onBoxActive, onBoxChoose, explain } = props;
+  const announce = useAnnounce();
   const scroller = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ width: 0, height: 0 });
   // Which pages are drawn and which one the middle of the view is on. Scrolling changes this
   // only when it crosses a page, so most scroll events draw nothing again.
   const [seen, setSeen] = useState<Seen>({ first: 0, last: -1, current: 0 });
+  // The page the keyboard asked for from inside another page. Focus follows once it is drawn.
+  const [wanted, setWanted] = useState<number | null>(null);
 
   useLayoutEffect(() => {
     const element = scroller.current;
@@ -120,25 +132,62 @@ export function PageScroller(props: Props) {
     if (firstNumber !== undefined && lastNumber !== undefined) onRange?.(firstNumber, lastNumber);
   }, [firstNumber, lastNumber, onRange]);
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      show(number, y) {
-        const element = scroller.current;
-        const index = pages.findIndex((p) => p.number === number);
-        const page = pages[index];
-        if (!element || !page) return;
-        const top = stack.tops[index] ?? 0;
-        const height = stack.heights[index] ?? 0;
-        const target =
-          y === undefined ? top - GAP : top + (y / page.height) * height - element.clientHeight / 3;
-        element.scrollTo({ top: Math.max(target, 0) });
-      },
-    }),
+  const show = useCallback(
+    (number: number, y?: number) => {
+      const element = scroller.current;
+      const index = pages.findIndex((p) => p.number === number);
+      const page = pages[index];
+      if (!element || !page) return;
+      const top = stack.tops[index] ?? 0;
+      const height = stack.heights[index] ?? 0;
+      const target =
+        y === undefined ? top - GAP : top + (y / page.height) * height - element.clientHeight / 3;
+      element.scrollTo({ top: Math.max(target, 0) });
+    },
     [pages, stack],
   );
 
-  const current = pages[seen.current]?.number;
+  // The page `delta` away from the page at `from`, shown and announced. Null at either end.
+  const turn = useCallback(
+    (from: number, delta: -1 | 1) => {
+      const page = pages[from + delta];
+      if (!page) return null;
+      show(page.number);
+      announce(`Page ${page.number} of ${pages.length}`);
+      return page.number;
+    },
+    [pages, show, announce],
+  );
+
+  const current = seen.current;
+  useImperativeHandle(ref, () => ({ show, step: (delta) => void turn(current, delta) }), [
+    show,
+    turn,
+    current,
+  ]);
+
+  const onPage = useCallback(
+    (number: number, delta: -1 | 1) => {
+      const reached = turn(
+        pages.findIndex((p) => p.number === number),
+        delta,
+      );
+      if (reached !== null) setWanted(reached);
+    },
+    [pages, turn],
+  );
+
+  useEffect(() => {
+    if (wanted === null) return;
+    const slot = scroller.current?.querySelector(`[data-page="${wanted}"]`);
+    if (!slot) return;
+    // A page without boxes has nothing to focus; the scroller keeps the keyboard.
+    (slot.querySelector<HTMLElement>('[role="listbox"]') ?? scroller.current)?.focus({
+      preventScroll: true,
+    });
+    setWanted(null);
+  }, [wanted, first, last]);
+
   const drawn = [];
   for (let index = first; index <= last; index++) {
     const page = pages[index];
@@ -152,13 +201,15 @@ export function PageScroller(props: Props) {
         width={pageWidth}
         image={image}
         boxes={boxes}
-        {...(onBoxEnter ? { onBoxEnter } : {})}
-        {...(onBoxLeave ? { onBoxLeave } : {})}
-        {...(onBoxClick ? { onBoxClick } : {})}
+        onPage={onPage}
+        {...(onBoxActive ? { onBoxActive } : {})}
+        {...(onBoxChoose ? { onBoxChoose } : {})}
+        {...(explain ? { explain } : {})}
       />,
     );
   }
 
+  const number = pages[current]?.number;
   return (
     <div className="scroller-frame">
       <div
@@ -173,9 +224,10 @@ export function PageScroller(props: Props) {
           {drawn}
         </div>
       </div>
-      {current !== undefined ? (
-        <div className="scroller-count" aria-live="off">
-          Page {current} of {pages.length}
+      {number !== undefined ? (
+        // For the eye only. The page reached after a jump is announced; scrolling says nothing.
+        <div className="scroller-count" aria-hidden="true">
+          Page {number} of {pages.length}
         </div>
       ) : null}
     </div>

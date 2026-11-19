@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { FieldOut } from "../api/client.ts";
-import { groupFields, tally } from "./fields.ts";
+import { fieldLabel, groupFields, outcome } from "./fields.ts";
 
 const field = (path: string, status: FieldOut["status"] = "extracted"): FieldOut => ({
   path,
@@ -37,9 +37,17 @@ describe("groupFields", () => {
     ]);
   });
 
-  it("counts the fields the spec names", () => {
-    const groups = groupFields([field("a"), field("b", "ambiguous"), field("a/0/x")]);
-    expect(tally(groups)).toBe("1 of 2 fields extracted");
-    expect(tally(groupFields([field("a")]))).toBe("1 of 1 field extracted");
+  it("says the outcome of a run, counting the fields the spec names", () => {
+    const groups = groupFields([field("a"), field("b", "ambiguous"), field("a/0/x", "missing")]);
+    expect(outcome(groups)).toBe("1 field extracted, 1 ambiguous");
+    expect(outcome(groupFields([field("a"), field("b")]))).toBe("2 fields extracted");
+    expect(outcome(groupFields([field("a", "missing"), field("b", "missing")]))).toBe(
+      "0 fields extracted, 2 missing",
+    );
+  });
+
+  it("describes a field by its path, its value and its status", () => {
+    expect(fieldLabel(field("total"), "118.00 GBP")).toBe("total: 118.00 GBP, extracted");
+    expect(fieldLabel(field("due", "missing"), "")).toBe("due, missing");
   });
 });

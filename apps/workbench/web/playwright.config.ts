@@ -16,5 +16,10 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     trace: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    // The keyboard and what a screen reader is told differ between engines, so those tests run
+    // in a second one.
+    { name: "firefox", use: { browserName: "firefox" }, testMatch: /(keyboard|axe)\.spec\.ts/ },
+  ],
 });

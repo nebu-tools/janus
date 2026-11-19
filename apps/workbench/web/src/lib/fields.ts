@@ -36,8 +36,23 @@ export function groupFields(fields: readonly FieldOut[]): FieldGroup[] {
   return groups;
 }
 
-/** "7 of 8 fields extracted", counting the fields the spec names and not their cells. */
-export function tally(groups: readonly FieldGroup[]): string {
-  const good = groups.filter((g) => g.field.status === "extracted").length;
-  return `${good} of ${groups.length} ${groups.length === 1 ? "field" : "fields"} extracted`;
+const STATUSES = ["missing", "invalid", "ambiguous", "incomplete", "unconfirmed"] as const;
+
+/** The outcome of a run in words: "7 fields extracted, 1 missing". It counts the fields the
+ * spec names and not their cells, and uses the library's words for a status. */
+export function outcome(groups: readonly FieldGroup[]): string {
+  const count = (status: string) => groups.filter((g) => g.field.status === status).length;
+  const good = count("extracted");
+  const parts = [`${good} ${good === 1 ? "field" : "fields"} extracted`];
+  for (const status of STATUSES) {
+    const n = count(status);
+    if (n > 0) parts.push(`${n} ${status}`);
+  }
+  return parts.join(", ");
+}
+
+/** What a field or a cell is and holds, for a screen reader and for a label on the page. */
+export function fieldLabel(field: FieldOut, shownValue: string): string {
+  const value = shownValue === "" ? "" : `: ${shownValue}`;
+  return `${field.path}${value}, ${field.status}`;
 }

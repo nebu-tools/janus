@@ -32,7 +32,7 @@ test("documents are added, read and removed", async ({ page, request }) => {
   await expect(invoice).toHaveCount(0);
   await expect(parts).toBeVisible();
 
-  await parts.getByRole("link", { name: "parts-list.pdf" }).click();
+  await parts.getByRole("link", { name: "parts-list.pdf", exact: true }).click();
   await expect(page).toHaveURL(/\/d\/[0-9a-f]{64}$/);
   await expect(page.getByRole("group", { name: "Pages" })).toBeVisible();
 });

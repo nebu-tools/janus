@@ -1,14 +1,7 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
 
 import { ready, spec } from "./examples.ts";
-
-const write = async (page: Page, text: string) => {
-  const editor = page.getByRole("textbox", { name: "Spec, in YAML" });
-  await editor.click();
-  await page.keyboard.press("ControlOrMeta+a");
-  await page.keyboard.insertText(text);
-};
+import { write } from "./steps.ts";
 
 test("a spec runs as it is typed and its fields point at the page", async ({ page, request }) => {
   const id = await ready(request, "invoice");
@@ -17,7 +10,7 @@ test("a spec runs as it is typed and its fields point at the page", async ({ pag
   await expect(results).toContainText("Write a spec on the left");
 
   await write(page, spec("invoice"));
-  await expect(results).toContainText("8 of 8 fields extracted");
+  await expect(results).toContainText("8 fields extracted");
   const total = results.locator('.fieldrow[data-path="total"]');
   await expect(total).toContainText("extracted");
   await expect(total).toContainText("391.20 GBP");
@@ -28,7 +21,7 @@ test("a spec runs as it is typed and its fields point at the page", async ({ pag
   const box = page.locator('[data-box="total"]');
   await expect(box).toHaveAttribute("data-look", "strong");
   await box.hover();
-  await expect(page.getByRole("tooltip")).toContainText("total: 391.20 GBP");
+  await expect(page.locator(".pageview-label")).toContainText("total: 391.20 GBP");
 
   // Clicking a box selects its field.
   await page.locator('[data-box="number"]').click();
@@ -47,9 +40,7 @@ test("a spec that does not load is marked on its line", async ({ page, request }
 
   await write(page, "name: Mended\nfields:\n  total: { label: Total due, type: money GBP }\n");
   await expect(page.getByTestId("spec-problem")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Results" })).toContainText(
-    "1 of 1 field extracted",
-  );
+  await expect(page.getByRole("region", { name: "Results" })).toContainText("1 field extracted");
 });
 
 test("a slow answer for an older edit does not replace a newer one", async ({ page, request }) => {
@@ -81,14 +72,19 @@ test("a spec is saved under a name and opened again", async ({ page, request }) 
   await page.goto(`/d/${id}/spec`);
   await write(page, spec("purchase-order"));
   await page.getByRole("textbox", { name: "Spec name" }).fill("Purchase order");
-  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.locator(".spec-foot")).toContainText("Saved");
 
   await page.reload();
   await expect(page.getByRole("region", { name: "Results" })).toContainText(
     "Write a spec on the left",
   );
-  await page.getByRole("combobox", { name: "Open a saved spec" }).selectOption("Purchase order");
+  await page.getByRole("button", { name: "Saved specs" }).click();
+  await page
+    .getByRole("dialog", { name: "Saved specs" })
+    .getByRole("button", { name: "Open Purchase order" })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Spec, in YAML" })).toContainText("fitting_days");
   await expect(page.getByRole("region", { name: "Results" })).toContainText("fields extracted");
 });
@@ -169,7 +165,7 @@ test("what was typed is kept per document until it is saved", async ({ page, req
 
   await page.goto(`/d/${invoice}/spec`);
   await expect(editor).toContainText("name: Unsaved");
-  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.locator(".spec-foot")).toContainText("Saved as Kept draft");
   await page.reload();
   await expect(page.getByRole("region", { name: "Results" })).toContainText(
@@ -206,7 +202,7 @@ test("page boxes of an earlier text are dimmed with the list, while a run is out
   const fields = (name: string) => `name: ${name}\nfields:\n  number: { label: Invoice No. }\n`;
   const current = async () => {
     await expect(list).toHaveAttribute("data-stale", "false");
-    await expect(results).toContainText("1 of 1 field extracted");
+    await expect(results).toContainText("1 field extracted");
     await expect(boxes).toHaveCount(1);
     await expect(old).toHaveCount(0);
     await expect(page.getByTestId("run-failure")).toHaveCount(0);
@@ -218,9 +214,9 @@ test("page boxes of an earlier text are dimmed with the list, while a run is out
     await expect(boxes).toHaveCount(1);
     await expect(old).toHaveCount(1);
     const opacity = await old.evaluate((element) => Number(getComputedStyle(element).opacity));
-    expect(opacity).toBeLessThan(0.7);
+    expect(opacity).toBeLessThan(0.8);
     await old.hover();
-    await expect(page.getByRole("tooltip")).toContainText("for the earlier text");
+    await expect(page.locator(".pageview-label")).toContainText("for the earlier text");
   };
 
   await write(page, fields("first"));
@@ -233,7 +229,7 @@ test("page boxes of an earlier text are dimmed with the list, while a run is out
   await current();
 
   await write(page, fields("refused"));
-  await expect(page.getByTestId("run-failure")).toHaveText(
+  await expect(page.getByTestId("run-failure").locator("p")).toHaveText(
     "The spec could not be run: the run broke",
   );
   await dimmed();
@@ -243,7 +239,7 @@ test("page boxes of an earlier text are dimmed with the list, while a run is out
   await current();
 
   await write(page, fields("unreachable"));
-  await expect(page.getByTestId("run-failure")).toHaveText(
+  await expect(page.getByTestId("run-failure").locator("p")).toHaveText(
     "The spec could not be run: the server did not answer",
   );
   await dimmed();

@@ -1,5 +1,7 @@
 /* The workbench's look: paper, ink and the three colours of the logo.
-   Moss is the one accent. Marmalade and jam only ever mean "check this" and "this failed". */
+   Moss is the one accent. Marmalade and jam only ever mean "check this" and "this failed".
+   `contrast.test.ts` reads these tokens and fails when a pair that is painted falls under its
+   ratio: 4.5 for text, 3 for a stroke that says something, 3 for text that is dimmed. */
 :root {
   color-scheme: light dark;
   --sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
@@ -12,26 +14,34 @@
   --rule: #dccfb1;
   --ink: #1f1c17;
   --ink-2: #57503f;
-  --ink-3: #857b63;
+  --ink-3: #6f664f;
+  /* The border of a control. `--rule` only divides and decorates. */
+  --edge: #887d62;
   --selection: #d9d9ae;
 
   --moss: #55703a;
   --moss-text: #3f5a26;
   --moss-wash: #e3e7c4;
-  --marmalade: #c98a1a;
-  --marmalade-text: #8a5a06;
+  --marmalade-text: #744a00;
   --marmalade-wash: #f5e2b3;
   --jam: #a82f47;
   --jam-text: #932239;
   --jam-wash: #f4d6d3;
   --on-accent: #fdfaf0;
 
-  --layer-words: #6b6455;
-  --layer-lines: #c98a1a;
-  --layer-headings: #a82f47;
-  --layer-tables: #55703a;
-  --layer-cells: #3d7c80;
-  --layer-hits: #d9a400;
+  /* What is drawn on a page. A page is white in both themes, so there is one palette, and
+     every colour in it is measured on white. */
+  --page-words: #6b6455;
+  --page-lines: #8a5a06;
+  --page-headings: #a82f47;
+  --page-tables: #4d6a31;
+  --page-cells: #2f7175;
+  --page-hits: #8f4fa8;
+  --page-good: #4d6a31;
+  --page-warn: #8a5a06;
+  --page-bad: #a82f47;
+  /* How strong an old answer stays on screen. */
+  --old: 0.75;
 
   --bar: 48px;
 }
@@ -45,13 +55,13 @@
     --rule: #3c362a;
     --ink: #efe6d2;
     --ink-2: #beb39a;
-    --ink-3: #8d836c;
+    --ink-3: #a0967e;
+    --edge: #7d745f;
     --selection: #45492c;
 
     --moss: #9dba78;
     --moss-text: #b2cc8f;
     --moss-wash: #2c3520;
-    --marmalade: #e2aa4b;
     --marmalade-text: #ecbd6c;
     --marmalade-wash: #3d3018;
     --jam: #e27f90;
@@ -85,9 +95,12 @@ body {
 
 h1,
 h2,
+h3,
 p,
 ul,
-ol {
+ol,
+dl,
+dd {
   margin: 0;
 }
 
@@ -106,6 +119,12 @@ h1 {
 
 h2 {
   font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+h3 {
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -150,7 +169,53 @@ select {
   white-space: nowrap;
 }
 
+/* Whatever an old answer left on screen is dimmed, in every list, by the same amount. */
+[data-stale="true"] {
+  opacity: var(--old);
+}
+
+/* The words that say what the old answer belongs to. They are never dimmed. */
+.old-label {
+  margin-top: 4px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+
+kbd + kbd {
+  margin-left: 4px;
+}
+
 /* --- Shell ---------------------------------------------------------------------------------- */
+
+.skip {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+  padding: 6px 12px;
+  border-radius: 5px;
+  background: var(--ink);
+  color: var(--paper);
+  transform: translateY(-200%);
+}
+
+.skip:focus {
+  transform: none;
+}
 
 .shell {
   display: grid;
@@ -221,9 +286,27 @@ select {
   outline-offset: -3px;
 }
 
+.help-button {
+  flex: none;
+  justify-content: center;
+  width: 30px;
+  margin-left: auto;
+  padding: 0;
+  font-weight: 600;
+}
+
+.tabs + .help-button {
+  margin-left: 0;
+}
+
 .main {
   min-height: 0;
   overflow: auto;
+}
+
+/* The main region takes focus when a screen opens and from the skip link. It is not a control. */
+.main:focus {
+  outline: none;
 }
 
 /* --- Small parts ---------------------------------------------------------------------------- */
@@ -233,7 +316,7 @@ select {
   align-items: center;
   height: 30px;
   padding: 0 12px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--edge);
   border-radius: 5px;
   background: var(--raised);
   color: var(--ink);
@@ -243,7 +326,7 @@ select {
 }
 
 .button:hover {
-  border-color: var(--ink-3);
+  border-color: var(--ink);
 }
 
 .button.primary {
@@ -261,7 +344,7 @@ select {
   height: 30px;
   min-width: 0;
   padding: 0 9px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--edge);
   border-radius: 5px;
   background: var(--raised);
 }
@@ -303,6 +386,119 @@ select {
   color: var(--ink);
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+/* A request that failed, said beside the control that made it. */
+.failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.failure p {
+  flex: 1 1 18ch;
+  min-width: 0;
+}
+
+.failure .button {
+  flex: none;
+}
+
+.dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(640px, calc(100vh - 48px));
+  padding: 0;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: 0 12px 40px rgb(20 15 5 / 0.3);
+}
+
+.dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog::backdrop {
+  background: rgb(20 15 5 / 0.45);
+}
+
+.dialog-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.dialog-head h2 {
+  font-size: 15px;
+}
+
+.dialog-body {
+  min-height: 0;
+  padding: 14px 16px 18px;
+  overflow-y: auto;
+}
+
+.dialog-body > * + * {
+  margin-top: 10px;
+}
+
+.dialog-body h3 + .keys {
+  margin-top: 6px;
+}
+
+.dialog-body .keys + h3,
+.dialog-body .quiet + h3 {
+  margin-top: 18px;
+}
+
+.keys {
+  display: grid;
+  gap: 5px;
+}
+
+.keys > div {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.saved {
+  display: grid;
+}
+
+.saved:focus-visible {
+  outline-offset: 4px;
+}
+
+.saved-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+}
+
+.saved-row + .saved-row {
+  border-top: 1px solid var(--rule);
+}
+
+.saved-name {
+  flex: 1 1 12ch;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.saved-failure {
+  flex: 1 0 100%;
 }
 
 .empty {
@@ -360,7 +556,7 @@ select {
   max-width: 1100px;
   margin: 0 auto;
   padding: 56px 32px;
-  border: 1.5px dashed var(--rule);
+  border: 1.5px dashed var(--edge);
   border-radius: 8px;
 }
 
@@ -498,6 +694,15 @@ select {
   white-space: nowrap;
 }
 
+.rowerror {
+  margin-top: 6px;
+  color: var(--jam-text);
+  font-size: 13px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .actions .button + .button {
   margin-left: 8px;
 }
@@ -543,7 +748,6 @@ select {
   color: var(--paper);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  opacity: 0.86;
   pointer-events: none;
 }
 
@@ -592,20 +796,8 @@ select {
   margin-top: 6px;
 }
 
-.find-error {
+.side-section > .failure {
   margin-top: 6px;
-}
-
-/* What an old answer left on screen, and the words that say what it belongs to. */
-.old-label {
-  margin-top: 4px;
-  font-size: 12.5px;
-  font-style: italic;
-  color: var(--ink-2);
-}
-
-.hits[data-stale="true"] {
-  opacity: 0.55;
 }
 
 .hits {
@@ -632,8 +824,10 @@ select {
   background: var(--wash);
 }
 
+/* The one chosen has a bar at its edge as well as a colour. */
 .hit[aria-pressed="true"] {
   background: var(--marmalade-wash);
+  box-shadow: inset 3px 0 0 var(--ink);
 }
 
 .hit:focus-visible,
@@ -678,12 +872,13 @@ select {
   accent-color: var(--moss);
 }
 
+/* A piece of page: the colour on white, as it is drawn there. */
 .swatch {
-  width: 14px;
-  height: 10px;
-  border: 1.5px solid currentColor;
+  width: 16px;
+  height: 12px;
+  border: 2px solid currentColor;
   border-radius: 2px;
-  background: color-mix(in srgb, currentColor 22%, transparent);
+  background: color-mix(in srgb, currentColor 22%, #fff);
 }
 
 .tables {
@@ -726,6 +921,11 @@ select {
   overflow-x: auto;
 }
 
+.preview-wrap:focus-visible,
+.records-wrap:focus-visible {
+  outline-offset: -2px;
+}
+
 .preview,
 .records {
   width: 100%;
@@ -758,8 +958,8 @@ select {
 }
 
 .spec-edit {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: var(--raised);
@@ -767,7 +967,8 @@ select {
 
 .spec-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--rule);
@@ -777,12 +978,40 @@ select {
   background: var(--paper);
 }
 
+.spec-unsaved {
+  grid-column: 1 / -1;
+}
+
+/* Something the person has to decide or know about the text, above the editor. */
+.bar-note {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule);
+  border-left: 3px solid var(--marmalade-text);
+  background: var(--marmalade-wash);
+}
+
+.bar-note p {
+  flex: 1 0 100%;
+}
+
 .editor {
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
 }
 
+.editor:focus-within {
+  outline: 2px solid var(--moss);
+  outline-offset: -2px;
+}
+
 .spec-foot {
+  flex: none;
   padding: 6px 12px;
   border-top: 1px solid var(--rule);
   overflow: hidden;
@@ -815,8 +1044,15 @@ select {
 
 .spec-results .notice {
   margin: 10px 12px 2px;
+}
+
+.spec-results .notice:not(.failure) {
   font-family: var(--mono);
   font-size: 12.5px;
+}
+
+.spec-results .old-label {
+  margin: 8px 14px 0;
 }
 
 .results-empty {
@@ -826,10 +1062,6 @@ select {
 
 .fields {
   padding: 6px 6px 24px;
-}
-
-.fields[data-stale="true"] {
-  opacity: 0.55;
 }
 
 .fielditem + .fielditem {
@@ -854,6 +1086,7 @@ select {
 
 .fieldrow[aria-pressed="true"] {
   background: var(--moss-wash);
+  box-shadow: inset 3px 0 0 var(--ink);
 }
 
 .fieldrow-top {
@@ -928,6 +1161,14 @@ select {
 
 .cellbutton[aria-pressed="true"] {
   background: var(--moss-wash);
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+
+/* The mark a cell carries when it is not plainly extracted: "?" to check, "!" for failed. */
+.cellmark {
+  display: inline-block;
+  margin-right: 5px;
+  font-weight: 700;
 }
 
 .cellbutton[data-tone="warn"] {
@@ -953,6 +1194,10 @@ select {
 
   .spec-edit {
     height: 60vh;
+  }
+
+  .bar {
+    gap: 12px;
   }
 
   .side,

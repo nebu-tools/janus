@@ -519,6 +519,83 @@ def test_two_writers_of_the_same_page_leave_one_whole_file(tmp_path, report_pdf,
     assert store.get(1) == page
 
 
+_KILLED_WRITER = """
+import os, signal, sys
+from pathlib import Path
+import pymupdf
+from janus_pdf.document import engines
+
+directory, pdf = Path(sys.argv[1]), Path(sys.argv[2]).read_bytes()
+fdopen = os.fdopen
+
+class Dies:
+    def __init__(self, out):
+        self.out = out
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        self.out.close()
+    def write(self, data):
+        self.out.write(data[: len(data) // 2])
+        self.out.flush()
+        os.kill(os.getpid(), signal.SIGKILL)
+
+engines.os.fdopen = lambda fd, mode: Dies(fdopen(fd, mode))
+store = engines._PageStore(directory, pdf, engines.PyMuPDFParser().recipe)
+with pymupdf.open(stream=pdf) as doc:
+    store.put(engines.pymupdf_page_input(doc[0]))
+"""
+
+
+def test_a_writer_killed_in_the_middle_of_a_write_leaves_a_part_the_next_writers_remove(
+    tmp_path, report_pdf
+):
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    from janus_pdf.document import engines
+
+    cache = tmp_path / "pages"
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(report_pdf)
+    killed = subprocess.run([sys.executable, "-c", _KILLED_WRITER, str(cache), str(pdf)])
+    assert killed.returncode == -signal.SIGKILL
+
+    recipe = PyMuPDFParser().recipe
+    store = engines._PageStore(cache, report_pdf, recipe)
+    (left,) = cache.iterdir()
+    assert left.name.startswith(f".{store.key}-") and left.suffix == ".part"
+    assert left.stat().st_size > 0  # half a page
+    assert store.get(1) is None  # and it is never taken for a page
+
+    # The same page is written again at once. The part may belong to a writer still at work.
+    whole = read(report_pdf, PyMuPDFParser(cache=tmp_path / "whole"))
+    page = engines._PageStore(tmp_path / "whole", report_pdf, recipe).get(1)
+    assert page is not None
+    store.put(page)
+    assert store.get(1) == page
+    assert left.exists()
+
+    # Ten minutes on, the next writer of this key removes it. Parts of another key, a younger
+    # part of this key and every other file stay.
+    old = time.time() - engines._PageStore.STALE_PART - 5
+    os.utime(left, (old, old))
+    young = cache / f".{store.key}-young.part"
+    other = cache / f".{'0' * 64}-other.part"
+    note = cache / "note.txt"
+    for path in (young, other, note):
+        path.write_bytes(b"x")
+    for path in (other, note):
+        os.utime(path, (old, old))
+    engines._PageStore(cache, report_pdf, recipe).put(page)
+    assert sorted(p.name for p in cache.iterdir()) == sorted(
+        [f"{store.key}-000001.json", young.name, other.name, note.name]
+    )
+    assert read(report_pdf, PyMuPDFParser(cache=cache)) == whole
+
+
 def test_page_count_refuses_what_read_refuses(report_pdf):
     from janus_pdf import page_count
     from support import REPORT
